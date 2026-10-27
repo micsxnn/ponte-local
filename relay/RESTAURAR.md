@@ -13,7 +13,7 @@ cd ponte-relay
 
 ## 2. Copiar os arquivos deste repositório
 
-Do clone deste repo (`git clone https://github.com/MicaelSanPedro/ponte-local`):
+Do clone deste repo (`git clone https://github.com/micsxnn/ponte-local`):
 
 | Arquivo do repo                          | Destino no projeto Next.js                      |
 |------------------------------------------|--------------------------------------------------|

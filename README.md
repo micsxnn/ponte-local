@@ -88,7 +88,7 @@ pergunta de novo.
 
 ### Caminho 1: deixe a IA instalar (recomendado)
 
-Abra um chat com sua IA e diga: *"leia https://github.com/MicaelSanPedro/ponte-local/blob/main/SKILL.md e instale a ponte pra mim"*. A skill guia relay, tokens, download do agente, validação e o primeiro comando. A ponte já está no ar? Diga *"leia o SKILL.md e opere minha ponte"* colando URL + ADMIN_TOKEN: Claude, Manus ou qualquer IA com `curl` opera sem hospedar nada.
+Abra um chat com sua IA e diga: *"leia https://github.com/micsxnn/ponte-local/blob/main/SKILL.md e instale a ponte pra mim"*. A skill guia relay, tokens, download do agente, validação e o primeiro comando. A ponte já está no ar? Diga *"leia o SKILL.md e opere minha ponte"* colando URL + ADMIN_TOKEN: Claude, Manus ou qualquer IA com `curl` opera sem hospedar nada.
 
 ### Caminho 2: manual
 
@@ -112,7 +112,7 @@ npm run dev    # Next.js 16+? deixe cacheComponents: false no next.config.ts (ve
 
 ```bash
 mkdir -p ~/ponte-agent && cd ~/ponte-agent
-curl -fso agent.js https://raw.githubusercontent.com/MicaelSanPedro/ponte-local/main/agente/agent.js
+curl -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js
 node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
 
@@ -120,7 +120,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 
 ```powershell
 mkdir "$HOME\ponte-agent" -Force; cd "$HOME\ponte-agent"
-curl.exe -fso agent.js https://raw.githubusercontent.com/MicaelSanPedro/ponte-local/main/agente/agent.js
+curl.exe -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js
 node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
 
@@ -149,7 +149,7 @@ A referência completa, com argumentos exatos, está na
 ponte-local/
 ├── SKILL.md               ← entrada para IAs: instale e opere (comece aqui)
 ├── agente/
-│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.5.1)
+│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.5.2)
 │   ├── LEIA-ME.md         ← manual do agente no PC do usuário
 │   ├── rodar.sh           ← religa lendo ponte.config.json (Linux)
 │   └── atualizar.sh       ← baixa a versão nova do agente (Linux)

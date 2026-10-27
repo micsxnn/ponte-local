@@ -16,7 +16,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 2.5.1 -->
+<!-- skill-version: 2.5.2 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -294,7 +294,7 @@ drive, `C:\Windows`, `C:\Program Files` ou `$HOME`.
 ### Nos dois casos
 
 - Alternativa quando este repo é público:
-  `curl -fso agent.js https://raw.githubusercontent.com/MicaelSanPedro/ponte-local/main/agente/agent.js`
+  `curl -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js`
 - Peça para ele **manter o terminal aberto** (o agente roda em primeiro plano;
   o banner mostra modo, escopo e proteções).
 - Próximas vezes: `~/ponte-agent/rodar.sh` (Linux, relê `ponte.config.json`) ou

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.5.1 (Windows + Linux)
+ * Ponte Local — Agente v1.5.2 (Windows + Linux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. Sem shell, sem execução de programas, sem rede além
  * do próprio relay.
@@ -31,13 +31,13 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.5.1";
+const VERSION = "1.5.2";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
 const LOG_FILE = path.join(SCRIPT_DIR, "ponte-log.jsonl");
 const SKILL_URL =
-  "https://raw.githubusercontent.com/MicaelSanPedro/ponte-local/main/SKILL.md";
+  "https://raw.githubusercontent.com/micsxnn/ponte-local/main/SKILL.md";
 const SKILL_FILE = path.join(SCRIPT_DIR, "SKILL.md");
 const SKILL_CHECK_MS = 6 * 60 * 60 * 1000; // no boot + a cada 6h
 
