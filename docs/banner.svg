@@ -74,17 +74,6 @@
   <text x="72" y="176" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="23" font-weight="600" fill="#f7f1e5" opacity="0.95">Sua IA opera seu PC pelo chat.</text>
   <text x="72" y="207" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="15.5" fill="#a89a82">Sem portas abertas &#183; sem VPN &#183; poll s&#243; de sa&#237;da &#183; travas rodando no seu PC</text>
 
-  <!-- pills -->
-  <g font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="14.5" font-weight="600">
-    <rect x="72" y="238" width="112" height="30" rx="15" fill="#f59e0b" fill-opacity="0.14" stroke="#f59e0b" stroke-opacity="0.7"/>
-    <text x="128" y="258" text-anchor="middle" fill="#ffcb6b">relay 1.3.1</text>
-    <rect x="196" y="238" width="102" height="30" rx="15" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.6"/>
-    <text x="247" y="258" text-anchor="middle" fill="#f7f1e5">skill 3.1.1</text>
-    <rect x="310" y="238" width="122" height="30" rx="15" fill="#f0880c" fill-opacity="0.12" stroke="#f0880c" stroke-opacity="0.7"/>
-    <text x="371" y="258" text-anchor="middle" fill="#ffa94d">agente 1.8.0</text>
-    <rect x="444" y="238" width="150" height="30" rx="15" fill="#a89a82" fill-opacity="0.10" stroke="#a89a82" stroke-opacity="0.5"/>
-    <text x="519" y="258" text-anchor="middle" fill="#c9bfae">0 depend&#234;ncias</text>
-  </g>
   <text x="72" y="308" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="13.5" fill="#8a7d68">O comando cruza a ponte, executa no seu PC e a resposta volta.</text>
 
   <!-- ===== ilustra&#231;&#227;o: a ponte VM &#8596; PC ===== -->
