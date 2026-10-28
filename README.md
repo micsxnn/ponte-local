@@ -6,10 +6,10 @@
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-3fb950)](https://nodejs.org)
-[![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-58a6ff)](#requisitos)
+[![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-f59e0b)](#requisitos)
 [![Dependências do agente](https://img.shields.io/badge/depend%C3%AAncias%20do%20agente-0-3fb950)](#como-funciona)
-[![IA-ready](https://img.shields.io/badge/IA--ready-SKILL.md-bc8cff)](SKILL.md)
-[![PRs bem-vindos](https://img.shields.io/badge/PRs-bem--vindos-1f6feb)](#contribuindo)
+[![IA-ready](https://img.shields.io/badge/IA--ready-SKILL.md-e3b341)](SKILL.md)
+[![PRs bem-vindos](https://img.shields.io/badge/PRs-bem--vindos-f0883e)](#contribuindo)
 
 </div>
 
