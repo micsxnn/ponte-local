@@ -36,7 +36,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.8.0";
+const VERSION = "1.8.1";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -754,7 +754,14 @@ for (const [label, exts] of GROUPS) for (const e of exts) EXT_TO_GROUP[e] = labe
 
 // ------------------------------------------- modo deus + skill (v1.5.0)
 function versaoDe(texto) {
-  const m = String(texto || "").match(/skill-version:\s*(\d+)\.(\d+)\.(\d+)/);
+  // aceita o conteúdo da SKILL.md (marcador "skill-version: X.Y.Z") OU uma
+  // versão pelada "3.1.1"/"v3.1.1" (é o que versaoSkillLocal devolve — antes
+  // a comparação sempre falhava e o agente relogava "skill atualizada" a cada
+  // ciclo de 60 s sem haver mudança nenhuma)
+  const s = String(texto || "");
+  const m =
+    s.match(/skill-version:\s*(\d+)\.(\d+)\.(\d+)/) ||
+    s.match(/^\s*v?(\d+)\.(\d+)\.(\d+)\s*$/);
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
 
