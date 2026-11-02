@@ -24,8 +24,12 @@
  *    (não lista comandos) e abre no editor de texto do usuário (Windows:
  *    start; Linux: xdg-open; macOS: open); quando a tarefa seguinte começa,
  *    a janela do relatório anterior é FECHADA na tela e o txt é apagado
- *  - Skill auto-atualizada (v1.5.0): baixa a SKILL.md do repo no boot e a
- *    cada 60 s → ~/ponte-agent/SKILL.md (ação skill_update força na hora)
+ *  - Skill auto-atualizada (v1.5.0, otimizada na v1.9.1): baixa a SKILL.md do
+ *    repo no boot e a cada 60 s → ~/ponte-agent/SKILL.md (ação skill_update
+ *    força na hora). Otimizações v1.9.1: ETag/If-None-Match (304 = zero bytes
+ *    baixados quando nada mudou), escrita ATÔMICA (tmp + rename — queda no
+ *    meio nunca deixa SKILL.md truncado), backoff progressivo até 15 min em
+ *    falhas de rede e aviso único de falha/recuperação (sem spam a cada minuto)
  *  - Saída visual (v1.9.0): spinner "rodando:" em toda ação em execução e
  *    caixa "output" com stdout/stderr/código ao fim de cada run_command.
  *    Adapta-se ao terminal: ANSI no Linux; no Windows o agente ATIVA o VT do
@@ -42,7 +46,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.9.0";
+const VERSION = "1.9.1";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -52,6 +56,7 @@ const SKILL_URL =
   "https://raw.githubusercontent.com/micsxnn/ponte-local/main/SKILL.md";
 const SKILL_FILE = path.join(SCRIPT_DIR, "SKILL.md");
 const SKILL_CHECK_MS = 60 * 1000; // no boot + a cada 60 s
+const SKILL_BACKOFF_MAX_MS = 15 * 60 * 1000; // teto do backoff em falhas seguidas
 
 let cfg = null; // preenchido no main()
 
@@ -991,7 +996,9 @@ function versaoMaisNova(a, b) {
   return false;
 }
 
-function httpsGetTexto(url, redirecoes) {
+function httpsGetTexto(url, redirecoes, ifNoneMatch) {
+  // ifNoneMatch (v1.9.1): ETag da resposta anterior → servidor responde 304
+  // sem corpo quando o conteúdo não mudou (economia de banda e de disco)
   redirecoes = redirecoes || 0;
   return new Promise((resolve, reject) => {
     let u;
@@ -1000,6 +1007,8 @@ function httpsGetTexto(url, redirecoes) {
     } catch (e) {
       return reject(new Error("URL inválida"));
     }
+    const headers = { "user-agent": "ponte-agent/" + VERSION };
+    if (ifNoneMatch) headers["if-none-match"] = ifNoneMatch;
     const lib = u.protocol === "https:" ? https : http;
     const req = lib.request(
       {
@@ -1008,17 +1017,18 @@ function httpsGetTexto(url, redirecoes) {
         path: u.pathname + u.search,
         method: "GET",
         timeout: 15000,
-        headers: { "user-agent": "ponte-agent/" + VERSION },
+        headers,
       },
       (res) => {
         if (
           res.statusCode >= 300 &&
           res.statusCode < 400 &&
+          res.statusCode !== 304 &&
           res.headers.location &&
           redirecoes < 3
         )
           return resolve(
-            httpsGetTexto(new URL(res.headers.location, url).toString(), redirecoes + 1)
+            httpsGetTexto(new URL(res.headers.location, url).toString(), redirecoes + 1, ifNoneMatch)
           );
         const chunks = [];
         let size = 0;
@@ -1030,7 +1040,11 @@ function httpsGetTexto(url, redirecoes) {
           } else chunks.push(c);
         });
         res.on("end", () =>
-          resolve({ status: res.statusCode, texto: Buffer.concat(chunks).toString("utf8") })
+          resolve({
+            status: res.statusCode,
+            texto: Buffer.concat(chunks).toString("utf8"),
+            etag: res.headers.etag || null,
+          })
         );
       }
     );
@@ -1040,20 +1054,62 @@ function httpsGetTexto(url, redirecoes) {
   });
 }
 
+// ---- estado do auto-update (v1.9.1): ETag da última resposta, intervalo
+// ---- atual (com backoff) e flag de aviso único de falha
+let skillEtag = null;
+let skillIntervalo = SKILL_CHECK_MS;
+let skillFalhasSeguidas = 0;
+let skillFalhaAvisada = false;
+
+function escreveArquivoAtomico(arquivo, conteudo) {
+  // grava em .tmp-<pid> e renomeia: uma queda no meio da escrita nunca deixa
+  // um arquivo truncado (o rename substitui o destino no Linux e no Windows;
+  // se o rename for barrado — antivírus/backup segurando o arquivo — cai para
+  // a escrita direta, que sempre funcionou)
+  const tmp = arquivo + ".tmp-" + process.pid;
+  fs.writeFileSync(tmp, conteudo);
+  try {
+    fs.renameSync(tmp, arquivo);
+  } catch (_) {
+    fs.writeFileSync(arquivo, conteudo);
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {
+      /* tmp sobrando não derruba o agente */
+    }
+  }
+}
+
 async function atualizarSkill(origem) {
   const r = {
     atualizou: false,
+    notModified: false,
     de: versaoSkillLocal(),
     para: null,
     origem: origem || "auto",
     erro: null,
   };
   try {
-    const { status, texto } = await httpsGetTexto(SKILL_URL);
+    // ETag (v1.9.1): só faz sentido mandar If-None-Match se já baixamos uma
+    // resposta com ETag E o arquivo local existe — um 304 contra arquivo
+    // apagado mentiria sobre o estado real
+    const pode304 = !!(skillEtag && fs.existsSync(SKILL_FILE));
+    const { status, texto, etag } = await httpsGetTexto(
+      SKILL_URL,
+      0,
+      pode304 ? skillEtag : null
+    );
+    if (status === 304 && pode304) {
+      // nada mudou no repo: sem corpo, sem escrita, sem log
+      r.notModified = true;
+      r.para = r.de;
+      return r;
+    }
     if (status !== 200) {
       r.erro = "HTTP " + status;
       return r;
     }
+    if (etag) skillEtag = etag;
     const remota = versaoDe(texto);
     if (!remota) {
       r.erro = "skill remota sem marcador de versão";
@@ -1062,7 +1118,7 @@ async function atualizarSkill(origem) {
     r.para = remota.join(".");
     const local = versaoDe(r.de);
     if (!local || versaoMaisNova(remota, local)) {
-      fs.writeFileSync(SKILL_FILE, texto);
+      escreveArquivoAtomico(SKILL_FILE, texto);
       const antes = r.de;
       r.de = antes || "nenhuma";
       r.atualizou = true;
@@ -1084,10 +1140,46 @@ async function atualizarSkill(origem) {
   return r;
 }
 
-function skillAutoUpdateLoop() {
-  atualizarSkill("boot").catch(() => {});
-  const t = setInterval(() => atualizarSkill("periodico").catch(() => {}), SKILL_CHECK_MS);
+function skillAgendaProxima() {
+  const t = setTimeout(async () => {
+    const r = await atualizarSkill("periodico").catch(() => null);
+    if (!r || r.erro) {
+      // falha: dobra o intervalo (60 s → 120 s → … teto 15 min) para não
+      // martelar o GitHub com a rede fora — e avisa UMA vez só
+      skillFalhasSeguidas++;
+      skillIntervalo = Math.min(
+        SKILL_BACKOFF_MAX_MS,
+        SKILL_CHECK_MS * Math.pow(2, skillFalhasSeguidas)
+      );
+      if (!skillFalhaAvisada) {
+        skillFalhaAvisada = true;
+        const motivo = r ? r.erro : "erro inesperado";
+        log(
+          "Aviso: checagem da skill falhou (" +
+            motivo +
+            ") — tentando de novo em " +
+            Math.round(skillIntervalo / 1000) +
+            " s"
+        );
+      }
+    } else {
+      // voltou (ou nunca falhou): intervalo base e aviso de recuperação único
+      if (skillFalhaAvisada) {
+        skillFalhaAvisada = false;
+        log("Checagem da skill voltou a funcionar.");
+      }
+      skillFalhasSeguidas = 0;
+      skillIntervalo = SKILL_CHECK_MS;
+    }
+    skillAgendaProxima();
+  }, skillIntervalo);
   if (t.unref) t.unref();
+}
+
+function skillAutoUpdateLoop() {
+  atualizarSkill("boot")
+    .catch(() => {})
+    .then(() => skillAgendaProxima());
 }
 
 function salvarGodMode(on) {
@@ -1487,7 +1579,8 @@ const ACTIONS = {
     const r = await atualizarSkill("comando");
     r.versaoLocal = versaoSkillLocal();
     r.arquivo = SKILL_FILE;
-    r.rotina = "boot + a cada 60 s (automático)";
+    r.rotina =
+      "boot + a cada 60 s (ETag/304; backoff ate 15 min se a rede falhar)";
     return r;
   },
 
@@ -2104,4 +2197,9 @@ module.exports = {
   limpaAnsi,
   ativaVTWindows,
   fonteVTWindows,
+  versaoDe,
+  versaoSkillLocal,
+  versaoMaisNova,
+  escreveArquivoAtomico,
+  atualizarSkill,
 };

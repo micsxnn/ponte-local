@@ -17,17 +17,13 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.2.0 -->
+<!-- skill-version: 3.3.0 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
 Você (a IA) comanda um relay que fala com um agente instalado no PC do usuário.
 O agente faz **poll** a cada 1,5 s, executa e devolve o resultado. Ele só abre
 conexões de **saída** — nada de portas abertas, firewall, port forwarding ou VPN.
-O relay tem uma **lane por máquina** (v1.3.0): cada agente autentica com o token
-da SUA máquina e as filas são independentes — comando destinado a uma máquina
-nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
-`PONTE_TOKEN_WINDOWS`), um por máquina, entregues no chat privado.
 O relay tem uma **lane por máquina** (v1.3.0): cada agente autentica com o token
 da SUA máquina e as filas são independentes — comando destinado a uma máquina
 nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
@@ -85,6 +81,7 @@ nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
 9. **Feche toda tarefa com `task_done` — sem isso o usuário não vê relatório.** Quando o trabalho termina (última resposta entregue, nada pendente), envie `{"action":"task_done","args":{"resumo":"O QUE foi feito, em 1-4 linhas, linguagem simples para o usuário"}}` como ÚLTIMO comando: o relatório que abre na tela dele mostra esse resumo (NÃO mostra a lista de comandos — seção chama "O QUE FOI FEITO"). Se vier `abriuRelatorio:false`, não houve comandos de trabalho; siga. Quando a PRÓXIMA tarefa começa, o agente sozinho fecha a janela do relatório anterior e apaga o txt.
 10. **Comando enfileirado não se perde mais — e não reenvie às cegas.** O relay entrega os pendentes com menos de 24h no reconnect (poll sem cursor) e persiste o estado em `.ponte-estado.json`: queda de rede, agente reiniciado ou Next reiniciado não gera mais comandos órfãos. Antes de reenviar um comando sem resposta, confira `results`/`pending` no `/status` — reenvio duplicado é execução dupla.
 11. **Mande o comando para a lane certa.** `POST /cmd` aceita `"lane":"netbook"|"windows"|"test"` — a fila é POR MÁQUINA. Sem lane, o relay 1.3.x usa `netbook` (transição do token único antigo) e logo passa a REJEITAR — informe sempre. Não sabe qual máquina está em cada lane? `/status` mostra (`lanes.<lane>.agentInfo.maquina`). Máquina nova na ponte = token novo para ela (Fase 2) = lane própria nasce junto.
+12. **Atualização da skill: desinstalação TOTAL antes de instalar.** Ao instalar QUALQUER versão nova da skill Ponte Local, você PRIMEIRO desinstala por completo a versão atual — apague a pasta inteira da skill (o `SKILL.md` e TODO arquivo auxiliar que exista lá) e só DEPOIS instale a versão nova do zero, direto deste repo. Nunca sobrescreva por cima, nunca deixe arquivo antigo "só por precaução": sobra de versão anterior mistura instruções contraditórias e produz comportamento errado no PC do usuário. Conferência final obrigatória: a pasta da skill deve conter EXATAMENTE os arquivos da versão nova — nada a mais, nada a menos — e o marcador `skill-version` no topo deve ser a versão que você acabou de instalar.
 
 ## A ponte já existe? Opere sem hospedar (Claude, Manus, qualquer IA)
 
@@ -503,10 +500,26 @@ A IA que opera DENTRO do PC do usuário deve preferir esse arquivo local —
 é sempre a versão vigente. A versão da skill vai no marcador
 `<!-- skill-version: X.Y.Z -->` no topo do arquivo. Verifique/force com
 `{"action":"skill_update","args":{}}` (devolve `atualizou`, `de`, `para`,
-`versaoLocal`); o `ping` também traz `skill`, `modoDeus` e `godModeDeclined`. Detalhe de
+`versaoLocal`, `notModified`); o `ping` também traz `skill`, `modoDeus` e
+`godModeDeclined`. Detalhe de
 operador: logo após um commit novo, o cache do raw.githubusercontent pode
 levar ~5 min para expirar — o `skill_update` devolve erro elegante ("sem
-marcador") e basta tentar de novo minutos depois.
+marcador") e basta tentar de novo minutos depois. Desde o agente v1.9.1 a
+checagem manda o ETag da resposta anterior: nada mudou no repo = HTTP 304
+com zero bytes baixados (campo `notModified:true`), sem reescrita de arquivo
+nem log; se a rede falha, o intervalo entra em backoff progressivo (dobra
+de 60 s até um teto de 15 min) e volta ao normal sozinho — um aviso único é
+impresso quando a checagem começa a falhar e outro quando recupera.
+
+**Troca de versão da skill = desinstalação TOTAL primeiro (regra 12).** Se
+você mantém a skill instalada na SUA pasta de skills (Claude, Manus, etc.),
+ao ver que existe versão nova (marcador `skill-version` maior no topo deste
+arquivo), NÃO sobrescreva: apague a instalação antiga INTEIRA — pasta da
+skill, `SKILL.md` e todo arquivo auxiliar — e instale a versão nova do repo
+do zero. Sobrescrever por cima pode deixar arquivo de versão anterior para
+trás, e instruções velhas misturadas com as novas são piores do que uma
+versão velha inteira. Ao fim, confira: só existem lá os arquivos da versão
+nova e o `skill-version` confere.
 
 **Relatório da tarefa (agente v1.8.0) — sem cronômetro e sem lista de comandos.** Quem decide que a tarefa acabou é VOCÊ: feche com `task_done` e um `resumo` em texto (o QUE foi feito, linguagem para o usuário) e o agente, na hora, grava `relatorio-ponte.txt` na pasta dele — cabeçalho (máquina, início/fim, duração, modo, contagem de comandos), seção **O QUE FOI FEITO** com o seu resumo numerado, seção **FALHAS** só se algum comando errou — e abre no editor de texto padrão do usuário: Windows via `start` (fallback `explorer.exe`), Linux via `xdg-open` (fallbacks `gio open`, `kde-open5`/`kde-open`), macOS via `open`. Quando a tarefa SEGUINTE começa (primeira ação de trabalho), o agente FECHA a janela do relatório anterior na tela e apaga o txt (inclusive sobras `relatorio-ponte-*.txt`); no boot do agente, idem. `ping` e `task_done` não entram na contagem; `task_done` sem comandos de trabalho devolve `abriuRelatorio:false`, não abre nada e não mexe no relatório anterior. Ao encerrar (`Ctrl+C`) o agente sai direto, sem relatório. Para a IA: o usuário verá o relatório abrir sozinho na tela dele — confirme o resultado no chat em uma frase, sem repetir o resumo inteiro.
 
