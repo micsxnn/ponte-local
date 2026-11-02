@@ -24,6 +24,10 @@
  *    (não lista comandos) e abre no editor de texto do usuário (Windows:
  *    start; Linux: xdg-open; macOS: open); quando a tarefa seguinte começa,
  *    a janela do relatório anterior é FECHADA na tela e o txt é apagado
+ *  - Relatório OBRIGATÓRIO (v1.10.0): não depende mais da IA mandar
+ *    task_done — pausa longa entre comandos (padrão 5 min,
+ *    PONTE_TAREFA_GAP_MS) ou o encerramento do agente fecham a tarefa
+ *    sozinhos, com relatório aberto na tela do usuário do mesmo jeito
  *  - Skill auto-atualizada (v1.5.0, otimizada na v1.9.1): baixa a SKILL.md do
  *    repo no boot e a cada 60 s → ~/ponte-agent/SKILL.md (ação skill_update
  *    força na hora). Otimizações v1.9.1: ETag/If-None-Match (304 = zero bytes
@@ -36,6 +40,9 @@
  *    console sozinho (PowerShell + P/Invoke, sem dependências) e, se não
  *    conseguir (console antigo), cai para \r + ASCII — nunca quebra. Sem TTY
  *    (saída redirecionada/app desktop) o spinner fica desligado.
+ *  - Logo no terminal (v1.10.0): arte "PONTE AGENTE" em blocos no boot;
+ *    degrada para banner ASCII em console antigo, locale sem UTF-8 ou
+ *    terminal estreito — nunca sai embarreirado.
  */
 "use strict";
 
@@ -46,7 +53,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.9.1";
+const VERSION = "1.10.0";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -125,6 +132,57 @@ function escreve(s) {
 function larguraTerminal() {
   const c = process.stdout && process.stdout.columns;
   return Math.max(40, Math.min(Number(c) || 80, 100));
+}
+
+// ------------------------------------------------------------------ logo (v1.10.0)
+// PONTE AGENTE — arte em blocos (U+2588 e U+2591) com reflexo nas duas
+// ultimas linhas. Renderiza em qualquer terminal UTF-8 do Linux (inclusive
+// o console virtual) e no cmd/PowerShell do Windows 10+ (fonte Consolas,
+// que tem os blocos; o Node escreve Unicode via WriteConsoleW, sem depender
+// de codepage). Onde nao tem garantia (Windows 7/8 com fonte raster, janela
+// de log do app desktop, locale sem UTF-8, terminal estreito) o banner cai
+// para uma versao 100% ASCII — a arte nunca sai embarreirada na tela.
+const LOGO = [
+  "████   ███  █   █ █████ █████    █      ███   ███   ███  █",
+  "█░░░█ █ ░░█ ██  █░ ░█░░░█░░░░░   █░    █ ░░█ █ ░░░ █ ░░█ █░",
+  "████░░█░ ░█░█░█ █░░ █░░░████░░░  █░░   █░ ░█░█░ ░░░█████░█░░",
+  "█░░░░ █░░ █░█░░██░░ █░░ █░░░░    █░░   █░░ █░█░░   █░░░█░█░░",
+  "█░░░░░ ███ ░█░░ █░░ █░░ █████░   █████  ███ ░░███  █░░░█░█████",
+  " ░░     ░░░ ░░░  ░░  ░░  ░░░░░    ░░░░░  ░░░ ░ ░░░  ░░  ░░░░░░░",
+  "  ░      ░░░  ░   ░   ░   ░░░░░    ░░░░░  ░░░   ░░░  ░   ░ ░░░░░",
+];
+const LOGO_LARGURA = Math.max.apply(
+  null,
+  LOGO.map((l) => l.length)
+);
+
+// Decisão de suporte: TTY Linux = UTF-8 por padrão há mais de uma década
+// (só recua se o locale for explicitamente não-UTF); Windows = só com TTY e
+// Win10+ (Consolas tem os blocos; Win7/8 usa fonte raster que não tem).
+function terminalSuportaLogo() {
+  if (process.platform === "win32") {
+    if (!process.stdout.isTTY) return false; // janela de log do app: fonte desconhecida
+    const maj = parseInt(String(os.release()).split(".")[0], 10) || 0;
+    return maj >= 10;
+  }
+  if (!process.stdout.isTTY) return true; // arquivo/pipe: UTF-8 no disco, sem risco de fonte
+  const l = String(
+    process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG || ""
+  ).toLowerCase();
+  return !l || l.includes("utf") || l.includes("65001");
+}
+
+function montarBanner(opts) {
+  const unicode = !!(opts && opts.unicode);
+  const largura = Math.max(
+    40,
+    Math.min(Number(opts && opts.largura) || 80, 100)
+  );
+  if (unicode && largura >= LOGO_LARGURA + 1) {
+    return LOGO.map((l) => l.padEnd(LOGO_LARGURA));
+  }
+  const barra = "=".repeat(Math.min(largura - 2, 50));
+  return [barra, "  P O N T E   A G E N T E", barra];
 }
 
 // tira escapes ANSI/OSC e \r do output dos comandos (ls --color, curl -#,
@@ -1868,20 +1926,39 @@ const ACTIONS = {
 // Sem cronômetro: a IA fecha a tarefa com a ação task_done e o agente
 // abre o relatório na tela do usuário na hora.
 let lote = null; // comandos da tarefa em andamento (ping e task_done não entram)
+// RELATÓRIO OBRIGATÓRIO (v1.10.0): o agente não depende mais da IA mandar
+// task_done — pausa longa entre comandos ou o encerramento do agente fecham
+// a tarefa sozinhos, sempre gerando e abrindo o relatório na tela.
+const TAREFA_GAP_MS = (() => {
+  const n = Number(process.env.PONTE_TAREFA_GAP_MS);
+  return n >= 1000 ? n : 5 * 60 * 1000; // pausa que fecha a tarefa anterior
+})();
+let relatorioEmTela = false; // há um relatório aberto na tela agora
+
+let matancaEditor = 0; // kills de editor em andamento (fecharJanelaRelatorio)
 
 function fecharJanelaRelatorio() {
-  // fecha o editor que estiver com o relatório aberto na tela (melhor esforço)
+  // fecha o editor que estiver com o relatório aberto na tela (melhor esforço);
+  // a contagem de kills em curso serve para o open do relatório NOVO esperar
+  // o fim do pkill — senão o kill mata o open recém-nascido (o padrão é o
+  // mesmo caminho "relatorio-ponte")
+  const terminou = () => {
+    if (matancaEditor > 0) matancaEditor--;
+  };
   try {
+    matancaEditor++;
     if (process.platform === "win32") {
       exec(
         'powershell -NoProfile -Command "Get-Process | Where-Object { $_.MainWindowTitle -like \'*relatorio-ponte*\' } | Stop-Process -Force"',
-        { timeout: 8000 }
+        { timeout: 8000 },
+        terminou
       );
     } else {
       // [e] no padrão evita o pkill matar o próprio shell que executa o comando
-      exec('pkill -f "relatorio-pont[e]" 2>/dev/null', { timeout: 8000 });
+      exec('pkill -f "relatorio-pont[e]" 2>/dev/null', { timeout: 8000 }, terminou);
     }
   } catch (_) {
+    terminou();
     /* sem pkill/sem GUI — segue */
   }
 }
@@ -1936,7 +2013,49 @@ function quebraTexto(s, larg) {
   return saida;
 }
 
-function montarRelatorioTexto(l, fim, resumo) {
+function rotuloAcao(a) {
+  // rótulos em linguagem de gente para o resumo automático do relatório
+  const rotulos = {
+    run_command: "comandos no terminal",
+    read_text: "leituras de arquivo (texto)",
+    read_binary: "leituras de arquivo (binário)",
+    file_info: "consultas de metadados de arquivo",
+    list: "listagens de pasta",
+    tree: "árvores de pastas",
+    search: "buscas de arquivos",
+    write_text: "gravações de texto",
+    write_binary: "gravações de binário",
+    mkdir: "criações de pasta",
+    move: "movimentações de arquivo",
+    rename: "renomeações",
+    restore: "restaurações da lixeira",
+    organize_plan: "planos de organização",
+    apply_plan: "planos aplicados",
+    undo_last: "operações de desfazer",
+    duplicates: "buscas de duplicados",
+    disk_usage: "análises de uso de disco",
+    free_space: "consultas de espaço livre",
+    skill_update: "atualizações da skill",
+    god_mode: "mudanças de modo",
+  };
+  return rotulos[a] || 'ações "' + a + '"';
+}
+
+function resumoAutomatico(l) {
+  // sem task_done, o relatório mostra um resumo FACTUAL por tipo de operação
+  const cont = {};
+  for (const c of l.comandos) cont[c.action] = (cont[c.action] || 0) + 1;
+  const itens = Object.keys(cont)
+    .sort((x, y) => cont[y] - cont[x])
+    .map((a) => "- " + cont[a] + "x " + rotuloAcao(a));
+  return [
+    "(A IA não fechou esta tarefa — o agente fechou sozinho. As operações",
+    "desta tarefa fizeram:)",
+    ...itens,
+  ].join("\n");
+}
+
+function montarRelatorioTexto(l, fim, resumo, automatico) {
   const total = l.comandos.length;
   const erros = l.comandos.filter((c) => !c.ok).length;
   const msTotal = fim - l.inicio;
@@ -1951,7 +2070,8 @@ function montarRelatorioTexto(l, fim, resumo) {
         : "supervisionado";
   const barra = "=".repeat(60);
 
-  // ---- O QUE FOI FEITO: descrição da IA em linguagem de gente (sem comandos) ----
+  // ---- O QUE FOI FEITO: descrição da IA em linguagem de gente (sem comandos);
+  // ---- sem task_done, o agente gera um resumo factual por tipo de operação
   const feitas = [];
   if (resumo && resumo.trim()) {
     const itens = resumo
@@ -1964,11 +2084,9 @@ function montarRelatorioTexto(l, fim, resumo) {
       });
     });
   } else {
-    feitas.push(
-      "  (A IA não enviou a descrição do que foi feito. Foram " + total +
-        " comando(s) executado(s), " + (total - erros) + " sem erro — o",
-      "  registro técnico completo fica no ponte-log.jsonl.)"
-    );
+    resumoAutomatico(l)
+      .split("\n")
+      .forEach((t) => feitas.push("  " + t));
   }
 
   // ---- FALHAS: só aparece se algo deu errado na tarefa ----
@@ -1994,6 +2112,7 @@ function montarRelatorioTexto(l, fim, resumo) {
     "Fim     : " + dataBr(fim),
     "Duração : " + durMin + " min " + durSeg + " s",
     "Modo    : " + modo,
+    "Fechamento: " + (automatico ? "automático pelo agente (a IA não enviou task_done)" : "pela IA (task_done)"),
     "Comandos: " + total + " (" + (total - erros) + " ok, " + erros + " com erro)",
     "",
     "O QUE FOI FEITO",
@@ -2010,39 +2129,119 @@ function montarRelatorioTexto(l, fim, resumo) {
   ].join("\n");
 }
 
-function fecharTarefa(resumo) {
+function fecharTarefa(resumo, automatico) {
   if (!lote || lote.comandos.length === 0) {
     lote = null;
     return { abriuRelatorio: false, comandos: 0, motivo: "sem comandos de trabalho nesta tarefa" };
   }
+  // relatório anterior na tela? mata o editor e apaga os txts — um relatório
+  // por vez; o open do relatório NOVO só nasce quando o kill terminar
+  const tinhaNaTela = relatorioEmTela;
+  if (tinhaNaTela) {
+    fecharRelatorioAnterior();
+    relatorioEmTela = false;
+  }
   const fim = new Date();
-  const texto = montarRelatorioTexto(lote, fim, resumo);
+  const texto = montarRelatorioTexto(lote, fim, resumo, automatico);
   let destino = RELATORIO_FILE;
   try {
-    fs.writeFileSync(destino, texto);
+    escreveArquivoAtomico(destino, texto);
   } catch (_) {
     destino = path.join(SCRIPT_DIR, "relatorio-ponte-" + Date.now() + ".txt");
     try {
-      fs.writeFileSync(destino, texto);
+      escreveArquivoAtomico(destino, texto);
     } catch (_2) {
       lote = null;
-      return { abriuRelatorio: false, comandos: 0, motivo: "não consegui gravar o relatório (arquivo antigo aberto no editor?)" };
+      return { abriuRelatorio: false, comandos: 0, motivo: "não consegui gravar o relatório" };
     }
   }
   const total = lote.comandos.length;
   lote = null;
-  log("Tarefa concluída pela IA — " + total + " comando(s). Relatório: " + path.basename(destino));
-  abrirNoNavegador(destino, (abriu) => {
-    if (!abriu) log("Sem app de texto disponível — o relatório está em " + destino);
-  });
-  return { abriuRelatorio: true, comandos: total, arquivo: path.basename(destino), caminho: destino };
+  log(
+    (automatico
+      ? "Tarefa fechada pelo agente (a IA não enviou task_done) — relatório aberto: "
+      : "Tarefa concluída pela IA — relatório aberto: ") +
+      path.basename(destino) +
+      " (" + total + " comando(s))"
+  );
+  const abrirNovo = () => {
+    relatorioEmTela = true; // otimista; se o open falhar, volta para false
+    abrirNoNavegador(destino, (abriu) => {
+      if (!abriu) {
+        relatorioEmTela = false; // nada foi aberto: o txt é a única cópia — não deixar apagar
+        log("Sem app de texto disponível — o relatório está em " + destino);
+      }
+    });
+  };
+  if (tinhaNaTela) {
+    // o kill emitido lá em cima está correndo: abrir antes dele terminar
+    // faria o pkill/Stop-Process matar o open recém-nascido
+    const quandoPuderAbrir = () => {
+      if (matancaEditor > 0) return setTimeout(quandoPuderAbrir, 50);
+      abrirNovo();
+    };
+    quandoPuderAbrir();
+  } else {
+    abrirNovo();
+  }
+  return {
+    abriuRelatorio: true,
+    automatico: !!automatico,
+    comandos: total,
+    arquivo: path.basename(destino),
+    caminho: destino,
+  };
+}
+
+function garantirTarefaPara() {
+  // ciclo OBRIGATÓRIO da tarefa: cria, renova (pausa longa = tarefa anterior
+  // fechada com relatório) ou apenas atualiza a atividade
+  const agora = Date.now();
+  if (!lote) {
+    // tarefa nova de verdade: o relatório anterior sai da TELA e o txt sai do
+    // DISCO (o usuário pediu: agente vai fazer algo novo = relatório anterior
+    // vai embora)
+    if (relatorioEmTela) {
+      fecharRelatorioAnterior();
+      relatorioEmTela = false;
+    }
+    lote = { inicio: new Date(), comandos: [], ultimaAtividade: agora };
+  } else if (agora - lote.ultimaAtividade >= TAREFA_GAP_MS) {
+    // pausa longa = a tarefa anterior acabou SEM task_done: o agente fecha
+    // sozinho (relatório é obrigatório) e a tarefa nova começa na sequência.
+    // O relatório que acabou de abrir fica na tela: fecharRelatorioAnterior
+    // só roda no fechamento da PRÓXIMA tarefa.
+    fecharTarefa(null, true);
+    lote = { inicio: new Date(), comandos: [], ultimaAtividade: agora };
+  } else {
+    lote.ultimaAtividade = agora;
+  }
+}
+
+let desligando = false;
+function desligarComRelatorio(sinal) {
+  // encerramento (Ctrl+C / SIGTERM): tarefa pendente gera relatório ANTES de
+  // sair — o relatório é obrigatório até no último instante
+  if (desligando) return;
+  desligando = true;
+  try {
+    if (lote && lote.comandos.length) {
+      fecharTarefa(null, true);
+      log("Agente encerrado (" + sinal + ") com tarefa em andamento — relatório gerado antes de sair.");
+    }
+  } catch (_) {
+    /* encerrar é o compromisso; relatório aqui é melhor esforço */
+  }
+  console.log("\nPonte encerrada. Até já!");
+  // espera o abrir (start/xdg-open) disparar antes de sair
+  setTimeout(() => process.exit(0), process.platform === "win32" ? 2500 : 1500);
 }
 
 function abrirNoNavegador(arquivo, cb) {
   const alvo = '"' + arquivo + '"';
   const lista =
     process.platform === "win32"
-      ? ['start "" ' + alvo, "explorer.exe " + alvo]
+      ? ['start "" ' + alvo, "explorer.exe " + alvo, "notepad.exe " + alvo]
       : process.platform === "darwin"
         ? ["open " + alvo]
         : ["xdg-open " + alvo, "gio open " + alvo, "kde-open5 " + alvo, "kde-open " + alvo];
@@ -2088,10 +2287,7 @@ async function processCommand(c) {
     }
   }
   if (c.action !== "ping" && c.action !== "task_done") {
-    if (!lote) {
-      lote = { inicio: new Date(), comandos: [] };
-      fecharRelatorioAnterior(); // tarefa nova: janela anterior fecha e txt sai
-    }
+    garantirTarefaPara(); // cria a tarefa ou fecha a anterior (relatório obrigatório)
     lote.comandos.push({
       id: c.id,
       action: c.action,
@@ -2100,6 +2296,7 @@ async function processCommand(c) {
       ms: Date.now() - t0,
       ts: Date.now(),
     });
+    lote.ultimaAtividade = Date.now();
   }
   let json = JSON.stringify(payload);
   if (json.length > 10500000) {
@@ -2119,6 +2316,10 @@ async function main() {
   const cli = parseArgs(process.argv.slice(2));
   if (cli.save) saveConfig(cfg);
 
+  console.log("──────────────────────────────────────────────");
+  for (const linha of montarBanner({ unicode: terminalSuportaLogo(), largura: larguraTerminal() })) {
+    console.log(linha);
+  }
   console.log("──────────────────────────────────────────────");
   console.log("  Ponte Local — agente v" + VERSION);
   console.log("  Servidor : " + cfg.server);
@@ -2146,10 +2347,8 @@ async function main() {
 
   ativaVTWindows(); // Windows: liga o ANSI do console (no-op no Linux)
 
-  process.on("SIGINT", () => {
-    console.log("\nPonte encerrada. Até já!");
-    process.exit(0);
-  });
+  process.on("SIGINT", () => desligarComRelatorio("Ctrl+C"));
+  process.on("SIGTERM", () => desligarComRelatorio("SIGTERM"));
 
   fecharRelatorioAnterior();
   skillAutoUpdateLoop();          // baixa a SKILL.md agora e a cada 60 s
@@ -2202,4 +2401,21 @@ module.exports = {
   versaoMaisNova,
   escreveArquivoAtomico,
   atualizarSkill,
+  LOGO,
+  LOGO_LARGURA,
+  montarBanner,
+  terminalSuportaLogo,
+  montarRelatorioTexto,
+  rotuloAcao,
+  resumoAutomatico,
+  fecharTarefa,
+  garantirTarefaPara,
+  desligarComRelatorio,
+  estadoTarefa: () => ({
+    loteAberto: !!lote,
+    comandos: lote ? lote.comandos.length : 0,
+    relatorioEmTela,
+    gapMs: TAREFA_GAP_MS,
+    desligando,
+  }),
 };
