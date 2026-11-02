@@ -57,7 +57,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.10.1";
+const VERSION = "1.10.2";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -283,6 +283,18 @@ function spinnerFim() {
   tela.spinAtivo = false;
   tela.spinRotulo = "";
   tela.spinLargura = 0;
+}
+
+// v1.10.2 — o spinner precisa ser PERCEBIDO: uma ação instantânea (list de
+// 13 ms) ligava e desligava o girador antes do olho humano captar, e o
+// usuário julgava que ele não existia. Ao fechar, segura o girador até
+// completar este mínimo (só em TTY — sem TTY o spinner nem liga).
+const SPIN_MINIMO_MS = 600;
+const esperaMs = (ms) => new Promise((r) => setTimeout(r, ms));
+async function spinnerGaranteMinimo() {
+  if (!tela.tty || !tela.spinAtivo) return;
+  const restante = SPIN_MINIMO_MS - (Date.now() - tela.spinInicio);
+  if (restante > 0) await esperaMs(restante);
 }
 
 // ------------------------------------------------------------ caixa de output
@@ -1886,6 +1898,7 @@ const ACTIONS = {
       );
       spinnerInicio(cmdline);
       const out = await executarComando(cmdline, cwd, timeoutMin);
+      await spinnerGaranteMinimo();
       spinnerFim();
       mostraOutput(out);
       audit({
@@ -1923,6 +1936,7 @@ const ACTIONS = {
     }
     spinnerInicio(cmdline);
     const out = await executarComando(cmdline, cwd, timeoutMin);
+    await spinnerGaranteMinimo();
     spinnerFim();
     mostraOutput(out);
     audit({ action: "run_command", resumo: cmdline.slice(0, 200), exitCode: out.code, ms: out.ms });
@@ -2299,7 +2313,10 @@ async function processCommand(c) {
       audit({ action: c.action, ok: false, erro: msg });
       payload = { id: c.id, ok: false, error: msg, durationMs: Date.now() - t0 };
     } finally {
-      if (gira) spinnerFim();
+      if (gira) {
+        await spinnerGaranteMinimo();
+        spinnerFim();
+      }
     }
   }
   if (c.action !== "ping" && c.action !== "task_done") {
@@ -2407,6 +2424,8 @@ module.exports = {
   spinnerFim,
   spinnerDesenha,
   spinnerLimpaLinha,
+  spinnerGaranteMinimo,
+  SPIN_MINIMO_MS,
   caixaOutput,
   larguraTerminal,
   limpaAnsi,
