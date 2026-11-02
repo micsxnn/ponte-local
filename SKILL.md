@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.4.0 -->
+<!-- skill-version: 3.5.0 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -80,7 +80,7 @@ nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
    `modoDeus` já vier `true`, apenas informe que o modo deus segue ativo.
 9. **Relatório é OBRIGATÓRIO — e o agente garante isso sozinho.** Quando o trabalho termina, envie `{"action":"task_done","args":{"resumo":"O QUE foi feito, em 1-4 linhas, linguagem simples para o usuário"}}` como ÚLTIMO comando: o relatório abre na tela dele mostrando esse resumo (NÃO mostra a lista de comandos — seção chama "O QUE FOI FEITO"). Se vier `abriuRelatorio:false`, não houve comandos de trabalho; siga. E se você ESQUECER o `task_done`, nada se perde: o agente fecha a tarefa sozinho — na pausa longa entre comandos (padrão 5 min) ou quando for encerrado — e abre o relatório do mesmo jeito, com resumo factual das operações. O relatório é inegociável; o seu `task_done` continua sendo o caminho bom, porque é ele que coloca a SUA descrição no lugar do resumo automático. Quando a PRÓXIMA tarefa começa, o agente sozinho fecha a janela do relatório anterior e apaga o txt.
 10. **Comando enfileirado não se perde mais — e não reenvie às cegas.** O relay entrega os pendentes com menos de 24h no reconnect (poll sem cursor) e persiste o estado em `.ponte-estado.json`: queda de rede, agente reiniciado ou Next reiniciado não gera mais comandos órfãos. Antes de reenviar um comando sem resposta, confira `results`/`pending` no `/status` — reenvio duplicado é execução dupla.
-11. **Mande o comando para a lane certa.** `POST /cmd` aceita `"lane":"netbook"|"windows"|"test"` — a fila é POR MÁQUINA. Sem lane, o relay 1.3.x usa `netbook` (transição do token único antigo) e logo passa a REJEITAR — informe sempre. Não sabe qual máquina está em cada lane? `/status` mostra (`lanes.<lane>.agentInfo.maquina`). Máquina nova na ponte = token novo para ela (Fase 2) = lane própria nasce junto.
+11. **Mande o comando para a lane certa.** `POST /cmd` aceita `"lane":"netbook"|"windows"|"test"|"celular"` — a fila é POR MÁQUINA. Sem lane, o relay 1.3.x usa `netbook` (transição do token único antigo) e logo passa a REJEITAR — informe sempre. Não sabe qual máquina está em cada lane? `/status` mostra (`lanes.<lane>.agentInfo.maquina`). Máquina nova na ponte = token novo para ela (Fase 2) = lane própria nasce junto.
 12. **Atualização da skill: desinstalação TOTAL antes de instalar.** Ao instalar QUALQUER versão nova da skill Ponte Local, você PRIMEIRO desinstala por completo a versão atual — apague a pasta inteira da skill (o `SKILL.md` e TODO arquivo auxiliar que exista lá) e só DEPOIS instale a versão nova do zero, direto deste repo. Nunca sobrescreva por cima, nunca deixe arquivo antigo "só por precaução": sobra de versão anterior mistura instruções contraditórias e produz comportamento errado no PC do usuário. Conferência final obrigatória: a pasta da skill deve conter EXATAMENTE os arquivos da versão nova — nada a mais, nada a menos — e o marcador `skill-version` no topo deve ser a versão que você acabou de instalar.
 
 ## A ponte já existe? Opere sem hospedar (Claude, Manus, qualquer IA)
@@ -337,6 +337,35 @@ cobre Windows: bloqueia `format`, `diskpart`, `cipher /w`, `vssadmin delete
 shadows` e `rd /s`/`del /s`/`Remove-Item -Recurse` apontando para raiz de
 drive, `C:\Windows`, `C:\Program Files` ou `$HOME`.
 
+### Termux (Android) — lane de celular (agente v1.10.1+)
+
+O agente roda no Termux como qualquer máquina da ponte: lane própria, token
+próprio, fila independente. O `run_command` resolve o bash sozinho
+(`$PREFIX/bin/bash` — o Android não tem `/bin`), a lixeira XDG com `undo_last`
+funciona dentro da home do Termux, o logo/spinner/caixa aparecem no terminal
+e o relatório fica em `~/ponte-agent/relatorio-ponte.txt` — não há app de
+texto para abrir sozinho, então leia com `cat` ou `termux-open`. Instalação
+(URL e token JÁ preenchidos por você):
+
+```bash
+pkg update -y && pkg install -y nodejs-lts
+termux-setup-storage   # ACEITA a permissão do Android na tela
+mkdir -p ~/ponte-agent
+curl -fso ~/ponte-agent/agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js
+termux-wake-lock
+node ~/ponte-agent/agent.js --server https://URL --token TOKEN --save
+```
+
+**Mantenha vivo**: `termux-wake-lock` antes de religar, Termux FORA da
+otimização de bateria (Ajustes do Android: bateria sem restrição) e a sessão
+aberta — o Android mata processo em segundo plano agressivamente. No
+`run_command` funcionam os utilitários do Termux e, com o pacote Termux:API
+(`pkg install termux-api` + app Termux:API do F-Droid), os comandos do
+aparelho: `termux-battery-status`, `termux-notification`, `termux-toast`,
+`termux-tts-speak`, `termux-camera-photo`, `termux-volume`, `termux-wifi-connectioninfo`
+e `am start` para abrir apps. O armazenamento do Android fica em
+`~/storage/shared` (após `termux-setup-storage`).
+
 ### Nos dois casos
 
 - Alternativa quando este repo é público:
@@ -588,7 +617,7 @@ sudo -S bash -c 'echo "usuario ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-nopa
 | Janela "conectado" | 45 s sem poll |
 | Pendente na fila | entregue no reconnect se <24h; mais velho que isso é descartado |
 | Snapshot do relay | `.ponte-estado.json` (fila pendente + últimos 400 resultados; sobrevive a restart) |
-| Lanes | 3 por relay (`netbook`, `windows`, `test`) — uma fila independente por máquina |
+| Lanes | 4 por relay (`netbook`, `windows`, `test`, `celular`) — uma fila independente por máquina |
 
 ## O que o usuário vê no terminal (agente v1.9.0+)
 

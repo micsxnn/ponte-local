@@ -43,6 +43,10 @@
  *  - Logo no terminal (v1.10.0): arte "PONTE AGENTE" em blocos no boot;
  *    degrada para banner ASCII em console antigo, locale sem UTF-8 ou
  *    terminal estreito — nunca sai embarreirado.
+ *  - Termux/Android (v1.10.1): run_command resolve o bash sozinho
+ *    (/bin/bash no desktop, $PREFIX/bin/bash no Termux — o Android não
+ *    tem /bin). Lixeira XDG e tudo o mais funcionam dentro da home do
+ *    Termux como uma máquina normal da ponte (lane própria).
  */
 "use strict";
 
@@ -53,7 +57,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.10.0";
+const VERSION = "1.10.1";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -843,6 +847,17 @@ function dangerCheck(cmdline) {
   return null;
 }
 
+// bash resolvido dinamicamente (v1.10.1): Linux desktop tem /bin/bash, mas
+// o Termux (Android) NÃO tem /bin — o bash dele vive em $PREFIX/bin/bash.
+// O primeiro candidato existente vence; "bash" solto cai na busca de PATH.
+const BASH = [
+  "/bin/bash",
+  "/usr/bin/bash",
+  "/usr/local/bin/bash",
+  process.env.PREFIX ? process.env.PREFIX + "/bin/bash" : null,
+  "/data/data/com.termux/files/usr/bin/bash",
+].find((p) => p && fs.existsSync(p)) || "bash";
+
 function executarComando(cmdline, cwd, timeoutMin) {
   const t0 = Date.now();
   return new Promise((resolve) => {
@@ -868,8 +883,9 @@ function executarComando(cmdline, cwd, timeoutMin) {
       // precisa dele (prompt interativo de sudo é coisa de Linux).
       exec(cmdline, opts, fim);
     } else {
-      // Linux/macOS: bash explícito, stdin herdado (sudo -S precisa).
-      execFile("/bin/bash", ["-c", cmdline], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
+      // Linux/macOS/Termux: bash explícito (resolvido pelo BASH), stdin
+      // herdado (sudo -S precisa).
+      execFile(BASH, ["-c", cmdline], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
     }
   });
 }
