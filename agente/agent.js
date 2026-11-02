@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.8.0 (Windows + Linux)
+ * Ponte Local — Agente v1.9.0 (Windows + Linux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. Sem shell, sem execução de programas, sem rede além
  * do próprio relay.
@@ -26,6 +26,12 @@
  *    a janela do relatório anterior é FECHADA na tela e o txt é apagado
  *  - Skill auto-atualizada (v1.5.0): baixa a SKILL.md do repo no boot e a
  *    cada 60 s → ~/ponte-agent/SKILL.md (ação skill_update força na hora)
+ *  - Saída visual (v1.9.0): spinner "rodando:" em toda ação em execução e
+ *    caixa "output" com stdout/stderr/código ao fim de cada run_command.
+ *    Adapta-se ao terminal: ANSI no Linux; no Windows o agente ATIVA o VT do
+ *    console sozinho (PowerShell + P/Invoke, sem dependências) e, se não
+ *    conseguir (console antigo), cai para \r + ASCII — nunca quebra. Sem TTY
+ *    (saída redirecionada/app desktop) o spinner fica desligado.
  */
 "use strict";
 
@@ -36,7 +42,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.8.1";
+const VERSION = "1.9.0";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -54,7 +60,16 @@ function stamp() {
   return new Date().toISOString();
 }
 function log(msg) {
-  console.log("[" + stamp().slice(11, 19) + "] " + msg);
+  // %s em console.log trata a linha como formato (%d, %s do output do usuário
+  // sumiriam) — escrever direto no stream é à prova disso
+  const linha = "[" + stamp().slice(11, 19) + "] " + msg;
+  if (tela.tty && tela.spinAtivo) {
+    spinnerLimpaLinha();
+    escreve(linha + "\n");
+    spinnerDesenha();
+  } else {
+    escreve(linha + "\n");
+  }
 }
 function fail(msg) {
   console.error("\n[x] " + msg + "\n");
@@ -69,6 +84,185 @@ function audit(entry) {
   } catch (_) {
     /* o log nunca deve derrubar o agente */
   }
+}
+
+// ------------------------------------------- tela: spinner + caixa (v1.9.0)
+// Linux/macOS: ANSI sempre existiu em terminal de distro. Windows: o cmd.exe
+// clássico vem com o modo VT DESLIGADO — o agente tenta ativá-lo sozinho e,
+// se não conseguir, tudo degrada para \r + ASCII. Nada aqui pode quebrar o
+// agente: toda escrita é protegida e todo recurso tem fallback.
+const tela = {
+  tty: !!process.stdout.isTTY,
+  vt: process.platform !== "win32",
+  plataforma: process.platform,
+  // braille no Linux (padrão npm/yarn); ASCII no Windows — o conhost com
+  // fonte Consolas/raster não tem glifos braille, e "|/-\" renderiza em
+  // qualquer fonte e codepage
+  frames:
+    process.platform === "win32"
+      ? ["-", "\\", "|", "/"]
+      : ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  spinTimer: null,
+  spinAtivo: false,
+  spinRotulo: "",
+  spinLargura: 0,
+  spinInicio: 0,
+};
+
+function escreve(s) {
+  try {
+    process.stdout.write(s);
+  } catch (_) {
+    /* stream fechado — o agente continua */
+  }
+}
+
+function larguraTerminal() {
+  const c = process.stdout && process.stdout.columns;
+  return Math.max(40, Math.min(Number(c) || 80, 100));
+}
+
+// tira escapes ANSI/OSC e \r do output dos comandos (ls --color, curl -#,
+// barras de progresso) para caber limpo dentro da caixa
+function limpaAnsi(s) {
+  return String(s || "")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/\r/g, "");
+}
+
+// Windows: liga ENABLE_VIRTUAL_TERMINAL_PROCESSING (bit 0x0004) no console.
+// O modo de console é da SESSÃO — o PowerShell filho seta e o cmd onde o
+// agente roda recebe de graça. EncodedCommand (base64 UTF-16LE) elimina
+// qualquer dor de quoting. Só devolve OK se o bit foi RELIDO de verdade:
+// no Win7/8 o SetConsoleMode falha com esse flag (não existe lá) — sem essa
+// re-leitura o agente acharia que tem VT e imprimiria lixo num console mudo.
+function fonteVTWindows() {
+  const mem =
+    '[DllImport("kernel32.dll")]public static extern IntPtr GetStdHandle(int h);' +
+    '[DllImport("kernel32.dll")]public static extern bool GetConsoleMode(IntPtr h,out int m);' +
+    '[DllImport("kernel32.dll")]public static extern bool SetConsoleMode(IntPtr h,int m);';
+  return (
+    "try{" +
+    "Add-Type -Namespace P -Name K -MemberDefinition '" +
+    mem +
+    "';" +
+    "$h=[P.K]::GetStdHandle(-11);$m=0;" +
+    "[void][P.K]::GetConsoleMode($h,[ref]$m);" +
+    "[void][P.K]::SetConsoleMode($h,$m -bor 4);" +
+    "$m2=0;[void][P.K]::GetConsoleMode($h,[ref]$m2);" +
+    "Write-Output $(if($m2 -band 4){'OK'}else{'ERRO'})" +
+    "}catch{Write-Output ERRO}"
+  );
+}
+
+function ativaVTWindows() {
+  if (tela.plataforma !== "win32" || !tela.tty || tela.vt) return;
+  try {
+    execFile(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(fonteVTWindows(), "utf16le").toString("base64"),
+      ],
+      { timeout: 10000, windowsHide: true, encoding: "utf8" },
+      (err, so) => {
+        if (!err && /OK/.test(String(so))) tela.vt = true;
+      }
+    );
+  } catch (_) {
+    /* sem powershell — segue no modo compatível */
+  }
+}
+
+// ------------------------------------------------------------------ spinner
+function spinnerDesenha() {
+  const s = Math.floor((Date.now() - tela.spinInicio) / 1000);
+  const f = tela.frames[Math.floor(Date.now() / 110) % tela.frames.length];
+  let txt = f + " rodando: " + tela.spinRotulo + (s >= 1 ? " (" + s + "s)" : "");
+  // NUNCA passar da largura do terminal — linha que quebra estraga o redesenho
+  const max = Math.max(16, larguraTerminal() - 1);
+  if (txt.length > max) txt = txt.slice(0, max - 3) + "...";
+  if (tela.vt) escreve("\r\x1b[2K" + txt);
+  else escreve("\r" + txt + " ".repeat(Math.max(0, tela.spinLargura - txt.length)));
+  if (txt.length > tela.spinLargura) tela.spinLargura = txt.length;
+}
+
+function spinnerLimpaLinha() {
+  if (tela.vt) escreve("\r\x1b[2K");
+  else escreve("\r" + " ".repeat(Math.max(0, tela.spinLargura)) + "\r");
+}
+
+function spinnerInicio(rotulo) {
+  if (!tela.tty || tela.spinTimer) return;
+  tela.spinAtivo = true;
+  tela.spinInicio = Date.now();
+  tela.spinRotulo = String(rotulo || "").replace(/\s+/g, " ").trim();
+  tela.spinLargura = 0;
+  spinnerDesenha();
+  tela.spinTimer = setInterval(spinnerDesenha, 110);
+  if (tela.spinTimer.unref) tela.spinTimer.unref();
+}
+
+function spinnerFim() {
+  if (tela.spinTimer) {
+    clearInterval(tela.spinTimer);
+    tela.spinTimer = null;
+  }
+  if (tela.spinAtivo) spinnerLimpaLinha();
+  tela.spinAtivo = false;
+  tela.spinRotulo = "";
+  tela.spinLargura = 0;
+}
+
+// ------------------------------------------------------------ caixa de output
+// Imprime UMA vez, quando o comando termina — nada de redesenho, funciona do
+// cmd.exe com fonte raster do Win7 ao Windows Terminal. Sem VT: caixa ASCII.
+function caixaOutput(titulo, stdout, stderr, codigo) {
+  const L = larguraTerminal();
+  const interna = Math.max(12, L - 4);
+  const gl = tela.vt
+    ? { st: "┌", hr: "─", mi: "│", ml: "├", mr: "┤", sm: "┐", sl: "└", sr: "┘" }
+    : { st: "+", hr: "-", mi: "|", ml: "+", mr: "+", sm: "+", sl: "+", sr: "+" };
+  const corta = (v) => {
+    const ch = [...String(v)];
+    return ch.length > interna ? ch.slice(0, interna - 1).join("") + "…" : String(v);
+  };
+  const encaixa = (v) => corta(v) + " ".repeat(Math.max(0, interna - [...corta(v)].length));
+  const linha = (v) => gl.mi + " " + encaixa(v) + " " + gl.mi;
+  const centro = (rot) => {
+    const t = corta(String(rot || ""));
+    const fill = Math.max(1, interna - [...t].length - 1);
+    return gl.st + gl.hr + " " + t + " " + gl.hr.repeat(fill) + gl.sm;
+  };
+  const linhasDe = (txt, cap) => {
+    const todas = limpaAnsi(txt).replace(/\t/g, "    ").split("\n");
+    while (todas.length && !todas[todas.length - 1].trim()) todas.pop();
+    const fora = todas.slice(0, cap).map(linha);
+    if (todas.length > cap)
+      fora.push(linha("… (mais " + (todas.length - cap) + " linhas)"));
+    return fora;
+  };
+
+  const fora = [];
+  fora.push(
+    centro(String(titulo || "output") + (codigo != null && codigo !== 0 ? " (código " + codigo + ")" : ""))
+  );
+  const so = linhasDe(stdout, 60);
+  const se = linhasDe(stderr, 30);
+  if (!so.length && !se.length) fora.push(linha("(sem saída)"));
+  else {
+    for (const l of so) fora.push(l);
+    if (se.length) {
+      fora.push(gl.ml + gl.hr + " stderr " + gl.hr.repeat(Math.max(1, interna - 7)) + gl.mr);
+      for (const l of se) fora.push(l);
+    }
+  }
+  fora.push(gl.sl + gl.hr.repeat(interna + 2) + gl.sr);
+  return fora.join("\n");
 }
 
 // ---------------------------------------------------------------- config
@@ -618,6 +812,21 @@ function executarComando(cmdline, cwd, timeoutMin) {
 }
 
 const corta150k = (s) => (s.length > 150000 ? s.slice(0, 150000) + "\n…[saída cortada]" : s);
+
+// Caixa "output" no terminal do usuário quando o run_command termina (v1.9.0).
+// O JSON com stdout/stderr segue indo para a IA como sempre — isto aqui é só
+// o feedback visível para quem está olhando o terminal.
+function mostraOutput(out) {
+  if (!out) return;
+  try {
+    escreve("\n");
+    escreve(caixaOutput("output", out.stdout, out.stderr, out.code) + "\n\n");
+    if (out.mortoPorTimeout)
+      log("O comando foi morto por timeout — a caixa acima pode estar incompleta.");
+  } catch (_) {
+    /* visual nunca derruba o agente */
+  }
+}
 
 // Pergunta s/N no terminal local, com tempo limite (para AUTO-REJEITAR).
 // Sem TTY (agente rodando em background), a resposta nunca chega e o
@@ -1508,7 +1717,10 @@ const ACTIONS = {
       console.log(
         "  [" + (cfg.auto ? "AUTO" : "deus") + "] $ " + cmdline.replace(/\s*\n\s*/g, " && ")
       );
+      spinnerInicio(cmdline);
       const out = await executarComando(cmdline, cwd, timeoutMin);
+      spinnerFim();
+      mostraOutput(out);
       audit({
         action: "run_command",
         modo: cfg.auto ? "auto" : "deus",
@@ -1542,7 +1754,10 @@ const ACTIONS = {
       audit({ action: "run_command", resumo: "REJEITADO: " + cmdline.slice(0, 200) });
       throw new Error("Você rejeitou o comando no terminal (resposta: " + (resposta || "vazia") + ")");
     }
+    spinnerInicio(cmdline);
     const out = await executarComando(cmdline, cwd, timeoutMin);
+    spinnerFim();
+    mostraOutput(out);
     audit({ action: "run_command", resumo: cmdline.slice(0, 200), exitCode: out.code, ms: out.ms });
     return {
       comando: cmdline,
@@ -1762,6 +1977,11 @@ async function processCommand(c) {
       error: "Ação desconhecida: " + c.action + " (fora da lista fixa permitida)",
     };
   } else {
+    // spinner para ações de arquivo etc.; run_command cuida do próprio
+    // (começa só depois do s/N, na hora de executar); ping/task_done mudos
+    const gira =
+      c.action !== "ping" && c.action !== "task_done" && c.action !== "run_command";
+    if (gira) spinnerInicio(c.action);
     try {
       const data = await fn(c.args || {});
       payload = { id: c.id, ok: true, data, durationMs: Date.now() - t0 };
@@ -1770,6 +1990,8 @@ async function processCommand(c) {
       const msg = e && e.message ? e.message : String(e);
       audit({ action: c.action, ok: false, erro: msg });
       payload = { id: c.id, ok: false, error: msg, durationMs: Date.now() - t0 };
+    } finally {
+      if (gira) spinnerFim();
     }
   }
   if (c.action !== "ping" && c.action !== "task_done") {
@@ -1829,6 +2051,8 @@ async function main() {
   );
   console.log("──────────────────────────────────────────────");
 
+  ativaVTWindows(); // Windows: liga o ANSI do console (no-op no Linux)
+
   process.on("SIGINT", () => {
     console.log("\nPonte encerrada. Até já!");
     process.exit(0);
@@ -1861,4 +2085,23 @@ async function main() {
 
 if (require.main === module) main().catch((e) => fail(e.message));
 // Exporta apenas para testes automatizados (nada roda quando requerido).
-module.exports = { dangerCheck, ALVO_SISTEMA, ALVO_SISTEMA_WIN, VERSION, tipoPorAssinatura, detectarEncoding, decodificarPedaco };
+module.exports = {
+  dangerCheck,
+  ALVO_SISTEMA,
+  ALVO_SISTEMA_WIN,
+  VERSION,
+  tipoPorAssinatura,
+  detectarEncoding,
+  decodificarPedaco,
+  tela,
+  log,
+  spinnerInicio,
+  spinnerFim,
+  spinnerDesenha,
+  spinnerLimpaLinha,
+  caixaOutput,
+  larguraTerminal,
+  limpaAnsi,
+  ativaVTWindows,
+  fonteVTWindows,
+};

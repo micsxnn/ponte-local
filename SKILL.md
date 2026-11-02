@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.1.1 -->
+<!-- skill-version: 3.2.0 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -576,6 +576,18 @@ sudo -S bash -c 'echo "usuario ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-nopa
 | Pendente na fila | entregue no reconnect se <24h; mais velho que isso é descartado |
 | Snapshot do relay | `.ponte-estado.json` (fila pendente + últimos 400 resultados; sobrevive a restart) |
 | Lanes | 3 por relay (`netbook`, `windows`, `test`) — uma fila independente por máquina |
+
+## O que o usuário vê no terminal (agente v1.9.0)
+
+Toda ação em andamento mostra um spinner `⠏ rodando: <rótulo> (Ns)` no
+terminal do usuário (no cmd do Windows o spinner é ASCII `|/-\`); ao fim de
+cada `run_command` o agente imprime uma caixa `output` com stdout, stderr e
+código de saída (truncada em 60 linhas de stdout e 30 de stderr — a IA
+continua recebendo o JSON completo em `result`). Nada muda no protocolo nem
+nos payloads: é feedback visual apenas. O agente ativa sozinho o ANSI do
+console do Windows (PowerShell + P/Invoke, lendo o bit de volta para não se
+enganar); se não conseguir (console antigo), usa caixa ASCII — e sem TTY
+(saída redirecionada / app desktop) o spinner fica desligado.
 
 ## Atualizar o agente no PC do usuário
 
