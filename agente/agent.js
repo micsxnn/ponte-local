@@ -57,7 +57,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.10.2";
+const VERSION = "1.10.3";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -300,29 +300,53 @@ async function spinnerGaranteMinimo() {
 // ------------------------------------------------------------ caixa de output
 // Imprime UMA vez, quando o comando termina — nada de redesenho, funciona do
 // cmd.exe com fonte raster do Win7 ao Windows Terminal. Sem VT: caixa ASCII.
+// v1.10.3 — NADA de truncar: linha maior que a largura QUEBRA (no espaço,
+// se houver) e continua na linha seguinte, dentro da moldura. E a largura
+// total da caixa fica 2 colunas abaixo do terminal: preencher a última
+// coluna ativa o wrap automático do terminal e desalinha a moldura inteira
+// (bug visto no Termux com o free -h).
+function quebraLargura(txt, larg) {
+  const saida = [];
+  for (const bruta of limpaAnsi(String(txt == null ? "" : txt)).replace(/\t/g, "    ").split("\n")) {
+    if ([...bruta].length <= larg) {
+      saida.push(bruta);
+      continue;
+    }
+    let restante = bruta;
+    while ([...restante].length > larg) {
+      const pedaco = [...restante].slice(0, larg + 1).join("");
+      let pos = pedaco.lastIndexOf(" ");
+      if (pos <= 0) pos = larg;
+      saida.push([...restante].slice(0, pos).join(""));
+      restante = [...restante].slice(pos).join("").replace(/^\s+/, "");
+    }
+    saida.push(restante);
+  }
+  return saida;
+}
+
 function caixaOutput(titulo, stdout, stderr, codigo) {
   const L = larguraTerminal();
-  const interna = Math.max(12, L - 4);
+  const interna = Math.max(12, L - 6);
   const gl = tela.vt
     ? { st: "┌", hr: "─", mi: "│", ml: "├", mr: "┤", sm: "┐", sl: "└", sr: "┘" }
     : { st: "+", hr: "-", mi: "|", ml: "+", mr: "+", sm: "+", sl: "+", sr: "+" };
-  const corta = (v) => {
-    const ch = [...String(v)];
-    return ch.length > interna ? ch.slice(0, interna - 1).join("") + "…" : String(v);
+  const encaixa = (v) => {
+    const s = String(v);
+    return s + " ".repeat(Math.max(0, interna - [...s].length));
   };
-  const encaixa = (v) => corta(v) + " ".repeat(Math.max(0, interna - [...corta(v)].length));
   const linha = (v) => gl.mi + " " + encaixa(v) + " " + gl.mi;
   const centro = (rot) => {
-    const t = corta(String(rot || ""));
+    const t = [...String(rot || "")].slice(0, interna - 2).join("");
     const fill = Math.max(1, interna - [...t].length - 1);
     return gl.st + gl.hr + " " + t + " " + gl.hr.repeat(fill) + gl.sm;
   };
   const linhasDe = (txt, cap) => {
-    const todas = limpaAnsi(txt).replace(/\t/g, "    ").split("\n");
-    while (todas.length && !todas[todas.length - 1].trim()) todas.pop();
-    const fora = todas.slice(0, cap).map(linha);
-    if (todas.length > cap)
-      fora.push(linha("… (mais " + (todas.length - cap) + " linhas)"));
+    const quebradas = quebraLargura(txt, interna);
+    while (quebradas.length && !quebradas[quebradas.length - 1].trim()) quebradas.pop();
+    const fora = quebradas.slice(0, cap).map(linha);
+    if (quebradas.length > cap)
+      fora.push(linha("… (mais " + (quebradas.length - cap) + " linhas)"));
     return fora;
   };
 
@@ -2427,6 +2451,7 @@ module.exports = {
   spinnerGaranteMinimo,
   SPIN_MINIMO_MS,
   caixaOutput,
+  quebraLargura,
   larguraTerminal,
   limpaAnsi,
   ativaVTWindows,
