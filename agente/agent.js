@@ -47,6 +47,12 @@
  *    (/bin/bash no desktop, $PREFIX/bin/bash no Termux — o Android não
  *    tem /bin). Lixeira XDG e tudo o mais funcionam dentro da home do
  *    Termux como uma máquina normal da ponte (lane própria).
+ *  - Largura REAL do terminal (v1.10.4): caixa de output, banner e spinner
+ *    medem a janela e SE ADAPTAM — o piso de 40 colunas forçava moldura
+ *    mais larga que a janela (Termux em pé com fonte maior quebrava a
+ *    moldura). Janela estreita = caixa estreita; só o texto quebra dentro.
+ *    TTY sem "columns" usa getWindowSize(); piso 20 contra degenerescência;
+ *    cap 100 em ultra-wide; pipe/arquivo segue no padrão 80.
  */
 "use strict";
 
@@ -57,7 +63,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.10.3";
+const VERSION = "1.10.4";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -134,8 +140,22 @@ function escreve(s) {
 }
 
 function larguraTerminal() {
-  const c = process.stdout && process.stdout.columns;
-  return Math.max(40, Math.min(Number(c) || 80, 100));
+  const out = process.stdout;
+  let c = Number(out && out.columns) || 0;
+  // TTY que ainda não preencheu "columns": pergunta a janela direto
+  if (!c && out && out.isTTY && typeof out.getWindowSize === "function") {
+    try {
+      c = Number(out.getWindowSize()[1]) || 0;
+    } catch (_) {
+      c = 0;
+    }
+  }
+  if (!c) c = 80; // pipe/arquivo/janela de log: sem info de largura, padrão antigo
+  // v1.10.4 — a moldura TEM que caber na janela REAL: nada de piso alto
+  // (o piso de 40 forçava caixa de 38 colunas em janela de 35 — quebrava).
+  // Piso 20 só contra degenerescência; cap 100 mantém a caixa legível
+  // em ultra-wide. Janela de 30 cols? Caixa de 28, moldura íntegra.
+  return Math.max(20, Math.min(c, 100));
 }
 
 // ------------------------------------------------------------------ logo (v1.10.0)
@@ -305,6 +325,8 @@ async function spinnerGaranteMinimo() {
 // total da caixa fica 2 colunas abaixo do terminal: preencher a última
 // coluna ativa o wrap automático do terminal e desalinha a moldura inteira
 // (bug visto no Termux com o free -h).
+// v1.10.4 — a largura passa a ser a LARGURA REAL da janela (larguraTerminal
+// sem piso 40): terminal estreito = caixa estreita; só o texto quebra.
 function quebraLargura(txt, larg) {
   const saida = [];
   for (const bruta of limpaAnsi(String(txt == null ? "" : txt)).replace(/\t/g, "    ").split("\n")) {
