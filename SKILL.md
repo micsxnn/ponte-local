@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.5.0 -->
+<!-- skill-version: 3.6.0 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -36,6 +36,23 @@ nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
 │ (zero deps)   │  POST /result    │ URL pública https   │ + lê res.  │ lê isto) │
 └──────────────┘                  └─────────────────────┘            └──────────┘
 ```
+
+## ⚠️ AS 4 LEIS — valem mais que tudo que vem depois
+
+1. **TODA tarefa termina com `task_done`. Sempre. Em qualquer tarefa, sem
+   exceção, como ÚLTIMA ação:**
+   `{"action":"task_done","args":{"resumo":"O QUE foi feito, em 1-4 linhas, linguagem simples para o usuário"}}`
+   Para o usuário, "a ponte funcionou" = a janela de relatório abrindo na tela
+   dele. Tarefa sem `task_done` fecha com resumo genérico e o aviso "a IA não
+   fechou esta tarefa" — para ele, você falhou. (Rede de segurança: o agente
+   fecha sozinho após ~3 min de silêncio, MESMO sem comando novo chegar —
+   mas isso é para-NUNCA-ficar-sem-relatório, não licença para esquecer.)
+2. **Todo comando vai na lane da máquina certa:**
+   `"lane":"netbook"|"windows"|"test"|"celular"` — fila é por máquina.
+3. **modo deus se pergunta no CHAT** (ping → pergunta aqui na conversa →
+   `god_mode {"enabled":true}`) — nunca nada digitado no terminal do usuário.
+4. **A trava anticatástrofe é intransponível** — nunca contorne, nem com
+   aprovação do usuário, nem em modo deus.
 
 ## Regras de ouro — leia antes de operar
 
@@ -78,7 +95,7 @@ nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
    envie `god_mode {"declined":true}` (fica registrado e você NÃO pergunta
    de novo nas próximas sessões; basta ele pedir quando quiser). Se
    `modoDeus` já vier `true`, apenas informe que o modo deus segue ativo.
-9. **Relatório é OBRIGATÓRIO — e o agente garante isso sozinho.** Quando o trabalho termina, envie `{"action":"task_done","args":{"resumo":"O QUE foi feito, em 1-4 linhas, linguagem simples para o usuário"}}` como ÚLTIMO comando: o relatório abre na tela dele mostrando esse resumo (NÃO mostra a lista de comandos — seção chama "O QUE FOI FEITO"). Se vier `abriuRelatorio:false`, não houve comandos de trabalho; siga. E se você ESQUECER o `task_done`, nada se perde: o agente fecha a tarefa sozinho — na pausa longa entre comandos (padrão 5 min) ou quando for encerrado — e abre o relatório do mesmo jeito, com resumo factual das operações. O relatório é inegociável; o seu `task_done` continua sendo o caminho bom, porque é ele que coloca a SUA descrição no lugar do resumo automático. Quando a PRÓXIMA tarefa começa, o agente sozinho fecha a janela do relatório anterior e apaga o txt.
+9. **Relatório é OBRIGATÓRIO — e o agente garante isso sozinho.** Quando o trabalho termina, envie `{"action":"task_done","args":{"resumo":"O QUE foi feito, em 1-4 linhas, linguagem simples para o usuário"}}` como ÚLTIMO comando: o relatório abre na tela dele mostrando esse resumo (NÃO mostra a lista de comandos — seção chama "O QUE FOI FEITO"). Se vier `abriuRelatorio:false`, não houve comandos de trabalho; siga. E se você ESQUECER o `task_done`, nada se perde: o agente fecha a tarefa sozinho — a pausa longa entre comandos é vigiada pelo próprio loop dele a cada 1,5 s (padrão 3 min; desde a v1.10.5 o relatório abre MESMO sem comando novo chegar, e no encerramento também) — e abre o relatório do mesmo jeito, com resumo factual das operações. O relatório é inegociável; o seu `task_done` continua sendo o caminho bom, porque é ele que coloca a SUA descrição no lugar do resumo automático. Quando a PRÓXIMA tarefa começa, o agente sozinho fecha a janela do relatório anterior e apaga o txt.
 10. **Comando enfileirado não se perde mais — e não reenvie às cegas.** O relay entrega os pendentes com menos de 24h no reconnect (poll sem cursor) e persiste o estado em `.ponte-estado.json`: queda de rede, agente reiniciado ou Next reiniciado não gera mais comandos órfãos. Antes de reenviar um comando sem resposta, confira `results`/`pending` no `/status` — reenvio duplicado é execução dupla.
 11. **Mande o comando para a lane certa.** `POST /cmd` aceita `"lane":"netbook"|"windows"|"test"|"celular"` — a fila é POR MÁQUINA. Sem lane, o relay 1.3.x usa `netbook` (transição do token único antigo) e logo passa a REJEITAR — informe sempre. Não sabe qual máquina está em cada lane? `/status` mostra (`lanes.<lane>.agentInfo.maquina`). Máquina nova na ponte = token novo para ela (Fase 2) = lane própria nasce junto.
 12. **Atualização da skill: desinstalação TOTAL antes de instalar.** Ao instalar QUALQUER versão nova da skill Ponte Local, você PRIMEIRO desinstala por completo a versão atual — apague a pasta inteira da skill (o `SKILL.md` e TODO arquivo auxiliar que exista lá) e só DEPOIS instale a versão nova do zero, direto deste repo. Nunca sobrescreva por cima, nunca deixe arquivo antigo "só por precaução": sobra de versão anterior mistura instruções contraditórias e produz comportamento errado no PC do usuário. Conferência final obrigatória: a pasta da skill deve conter EXATAMENTE os arquivos da versão nova — nada a mais, nada a menos — e o marcador `skill-version` no topo deve ser a versão que você acabou de instalar.
@@ -550,7 +567,7 @@ trás, e instruções velhas misturadas com as novas são piores do que uma
 versão velha inteira. Ao fim, confira: só existem lá os arquivos da versão
 nova e o `skill-version` confere.
 
-**Relatório da tarefa (agente v1.8.0; OBRIGATÓRIO desde a v1.10.0) — sem cronômetro e sem lista de comandos.** Quem decide que a tarefa acabou é VOCÊ: feche com `task_done` e um `resumo` em texto (o QUE foi feito, linguagem para o usuário) e o agente, na hora, grava `relatorio-ponte.txt` na pasta dele — cabeçalho (máquina, início/fim, duração, modo, fechamento), seção **O QUE FOI FEITO** com o seu resumo numerado, seção **FALHAS** só se algum comando errou — e abre no editor de texto padrão do usuário: Windows via `start` (fallbacks `explorer.exe` e `notepad.exe`), Linux via `xdg-open` (fallbacks `gio open`, `kde-open5`/`kde-open`), macOS via `open`. **Garantia do agente (v1.10.0, inegociável):** mesmo sem `task_done`, a tarefa é fechada e o relatório abre — (a) quando a pausa entre comandos passa do limite (padrão 5 min; env `PONTE_TAREFA_GAP_MS`, mínimo 1 s) e um comando novo chega, o agente fecha a tarefa anterior sozinho e o relatório novo traz um resumo factual por tipo de operação; (b) quando o agente é encerrado (Ctrl+C/SIGTERM) com tarefa pendente, o relatório é gerado ANTES de sair. Quando a PRÓXIMA tarefa começa (primeira ação de trabalho), o agente FECHA a janela do relatório anterior na tela e apaga o txt (inclusive sobras `relatorio-ponte-*.txt`); no boot do agente, idem. Se o relatório não conseguiu abrir (máquina sem GUI), o agente NÃO apaga o txt na tarefa seguinte — é a única cópia, e o caminho fica impresso no terminal. `ping` e `task_done` não entram na contagem; `task_done` sem comandos de trabalho devolve `abriuRelatorio:false`, não abre nada e não mexe no relatório anterior. Para a IA: o usuário verá o relatório abrir sozinho na tela dele — confirme o resultado no chat em uma frase, sem repetir o resumo inteiro.
+**Relatório da tarefa (agente v1.8.0; OBRIGATÓRIO desde a v1.10.0, à prova de esquecimento desde a v1.10.5) — sem lista de comandos.** Quem decide que a tarefa acabou é VOCÊ: feche com `task_done` e um `resumo` em texto (o QUE foi feito, linguagem para o usuário) e o agente, na hora, grava `relatorio-ponte.txt` na pasta dele — cabeçalho (máquina, início/fim, duração, modo, fechamento), seção **O QUE FOI FEITO** com o seu resumo numerado, seção **FALHAS** só se algum comando errou — e abre no editor de texto padrão do usuário: Windows via `start` (fallbacks `explorer.exe` e `notepad.exe`), Linux via `xdg-open` (fallbacks `gio open`, `kde-open5`/`kde-open`), macOS via `open`. **Garantia do agente (inegociável):** mesmo sem `task_done`, a tarefa é fechada e o relatório abre — (a) o loop do agente vigia a pausa a cada 1,5 s: passou do limite (padrão 3 min; env `PONTE_TAREFA_GAP_MS`, mínimo 1 s), ele fecha a tarefa e abre o relatório SOZINHO, mesmo que NENHUM comando novo chegue depois (v1.10.5 — antes, agente rodando como serviço podia nunca fechar); (b) quando o agente é encerrado (Ctrl+C/SIGTERM) com tarefa pendente, o relatório é gerado ANTES de sair. Quando a PRÓXIMA tarefa começa (primeira ação de trabalho), o agente FECHA a janela do relatório anterior na tela e apaga o txt (inclusive sobras `relatorio-ponte-*.txt`); no boot do agente, idem. Se o relatório não conseguiu abrir (máquina sem GUI), o agente NÃO apaga o txt na tarefa seguinte — é a única cópia, e o caminho fica impresso no terminal. `ping` e `task_done` não entram na contagem; `task_done` sem comandos de trabalho devolve `abriuRelatorio:false`, não abre nada e não mexe no relatório anterior. Para a IA: o usuário verá o relatório abrir sozinho na tela dele — confirme o resultado no chat em uma frase, sem repetir o resumo inteiro.
 
 ## Sudo sem expor senha (padrão seguro) — Linux, só com autorização explícita
 

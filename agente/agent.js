@@ -19,15 +19,19 @@
  *    CONVERSACIONAL: a IA pergunta ao usuário NO CHAT depois de conectar e,
  *    com o aceite dele, envia god_mode {"enabled":true}; zero prompt no
  *    terminal; trava anticatástrofe permanece
- *  - Relatório da tarefa (v1.8.0): SEM cronômetro — a IA fecha a tarefa com
+ *  - Relatório da tarefa (v1.8.0): a IA fecha a tarefa com
  *    task_done e um RESUMO do que foi feito; o relatório mostra esse resumo
  *    (não lista comandos) e abre no editor de texto do usuário (Windows:
  *    start; Linux: xdg-open; macOS: open); quando a tarefa seguinte começa,
  *    a janela do relatório anterior é FECHADA na tela e o txt é apagado
- *  - Relatório OBRIGATÓRIO (v1.10.0): não depende mais da IA mandar
- *    task_done — pausa longa entre comandos (padrão 5 min,
+ *  - Relatório OBRIGATÓRIO (v1.10.0, blindado na v1.10.5): não depende mais
+ *    da IA mandar task_done — pausa longa entre comandos (padrão 3 min,
  *    PONTE_TAREFA_GAP_MS) ou o encerramento do agente fecham a tarefa
- *    sozinhos, com relatório aberto na tela do usuário do mesmo jeito
+ *    sozinhos, com relatório aberto na tela do usuário do mesmo jeito.
+ *    v1.10.5 corrige a falha real: o fechamento automático não depende mais
+ *    de chegar COMANDO NOVO — o próprio loop de poll (a cada 1,5 s) vê a
+ *    pausa e abre o relatório sozinho. Antes, com o agente como serviço
+ *    (systemd), tarefa esquecida podia ficar SEM relatório para sempre.
  *  - Skill auto-atualizada (v1.5.0, otimizada na v1.9.1): baixa a SKILL.md do
  *    repo no boot e a cada 60 s → ~/ponte-agent/SKILL.md (ação skill_update
  *    força na hora). Otimizações v1.9.1: ETag/If-None-Match (304 = zero bytes
@@ -63,7 +67,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.10.4";
+const VERSION = "1.10.5";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -1999,15 +2003,17 @@ const ACTIONS = {
 };
 
 // ---------------------------------------------------------------- relatório da tarefa (v1.8.0)
-// Sem cronômetro: a IA fecha a tarefa com a ação task_done e o agente
-// abre o relatório na tela do usuário na hora.
+// A IA fecha a tarefa com a ação task_done e o agente abre o relatório na
+// tela do usuário na hora; sem task_done, quem fecha é o agente (v1.10.0+).
 let lote = null; // comandos da tarefa em andamento (ping e task_done não entram)
 // RELATÓRIO OBRIGATÓRIO (v1.10.0): o agente não depende mais da IA mandar
 // task_done — pausa longa entre comandos ou o encerramento do agente fecham
 // a tarefa sozinhos, sempre gerando e abrindo o relatório na tela.
+// (v1.10.5) a pausa é vigiada PELO LOOP de poll (fechaRelatorioVencido()):
+// não precisa mais de comando novo chegando para disparar o fechamento.
 const TAREFA_GAP_MS = (() => {
   const n = Number(process.env.PONTE_TAREFA_GAP_MS);
-  return n >= 1000 ? n : 5 * 60 * 1000; // pausa que fecha a tarefa anterior
+  return n >= 1000 ? n : 3 * 60 * 1000; // pausa que fecha a tarefa anterior
 })();
 let relatorioEmTela = false; // há um relatório aberto na tela agora
 
@@ -2294,6 +2300,24 @@ function garantirTarefaPara() {
   }
 }
 
+function fechaRelatorioVencido() {
+  // (v1.10.5) vigia a pausa SEM depender de comando novo: chamado a cada
+  // iteração do loop de poll (a cada ~1,5 s). Tarefa com trabalho feito e
+  // parada há mais de TAREFA_GAP_MS fecha com relatório automático — era
+  // exatamente o buraco que fazia o usuário ficar sem relatório: a v1.10.0
+  // só fechava quando o PRÓXIMO comando chegava, e com o agente como serviço
+  // (systemd, nunca encerra) uma tarefa esquecida podia não gerar relatório
+  // NUNCA. Roda fora de processCommand, então nenhum comando está em voo
+  // (o loop é sequencial: enquanto um comando executa, não passa aqui).
+  if (!lote || !lote.comandos.length) return;
+  const silencioMs = Date.now() - lote.ultimaAtividade;
+  if (silencioMs < TAREFA_GAP_MS) return;
+  log(
+    "Tarefa parada há " + Math.round(silencioMs / 1000) + " s sem task_done da IA — fechando com relatório automático."
+  );
+  fecharTarefa(null, true);
+}
+
 let desligando = false;
 function desligarComRelatorio(sinal) {
   // encerramento (Ctrl+C / SIGTERM): tarefa pendente gera relatório ANTES de
@@ -2439,6 +2463,7 @@ async function main() {
       if (!res.ok) throw new Error(res.error || "relay recusou o poll");
       cursor = res.nextCursor != null ? res.nextCursor : cursor || 0;
       for (const c of res.commands || []) await processCommand(c);
+      fechaRelatorioVencido(); // relatório obrigatório: não depende de comando novo (v1.10.5)
       if (!connectedOnce) {
         log("Conectado à ponte. Deixe esta janela aberta — é por aqui que eu trabalho.");
         connectedOnce = true;
@@ -2492,6 +2517,7 @@ module.exports = {
   resumoAutomatico,
   fecharTarefa,
   garantirTarefaPara,
+  fechaRelatorioVencido,
   desligarComRelatorio,
   estadoTarefa: () => ({
     loteAberto: !!lote,
