@@ -111,30 +111,71 @@ def main():
         if not d["results"]:
             print(f"(nenhum resultado novo desde {since})")
         return 0
-    if sys.argv[1] == "pegar":  # read_binary → decodifica → salva local
+    if sys.argv[1] == "pegar":  # read_binary em pedaços (proximoOffset) → junta → salva local
         import base64
         remoto, local = sys.argv[2], sys.argv[3]
         since = get_since()
-        out = req("/api/ponte/cmd", {"action": "read_binary", "args": {"path": remoto}}, method="POST")
-        if not out.get("ok"):
-            print("ERRO:", out); return 1
-        cid = out["id"]
-        for _ in range(40):
-            time.sleep(1.5)
-            d = req(f"/api/ponte/results?since={since}")
-            for r in d["results"]:
-                set_since(max(since, r["id"]))
-                since = max(since, r["id"])
-                if r["id"] == cid:
-                    if not r["ok"]:
-                        print("ERRO do agente:", r.get("error")); return 2
-                    data = r.get("data") or {}
-                    raw = base64.b64decode(data.get("base64", ""))
-                    with open(local, "wb") as f:
-                        f.write(raw)
-                    print(f"OK: {remoto} ({data.get('bytes')} bytes) → {local}")
-                    return 0
-        print("TEMPO ESGOTADO"); return 3
+        # O agente devolve ~6 MB por chamada e um proximoOffset quando falta
+        # arquivo (v1.4.0). Antes o pegar parava no 1º pedaço e imprimia o
+        # tamanho TOTAL do arquivo — truncava em silêncio. Agora segue o
+        # proximoOffset até o fim e reporta o tamanho REAL baixado.
+        offset = 0
+        baixado = 0
+        pedacos = 0
+        bytes_agente = None  # tamanho total que o agente diz que o arquivo tem
+        f = None  # abre só no 1º pedaço BOM: antes o open("wb") vinha antes do
+        try:      # 1º POST e truncava o arquivo local mesmo se o relay estivesse
+                  # fora ou o comando fosse recusado
+            for _pedaco in range(200):  # teto de segurança: 200 pedaços × ~6 MB
+                out = req("/api/ponte/cmd", {"action": "read_binary", "args": {"path": remoto, "offset": offset}}, method="POST")
+                if not out.get("ok"):
+                    print("ERRO:", out); return 1
+                cid = out["id"]
+                r = None
+                for _ in range(40):  # espera do pedaço: 60 s, como antes
+                    time.sleep(1.5)
+                    d = req(f"/api/ponte/results?since={since}")
+                    for rr in d["results"]:
+                        set_since(max(since, rr["id"]))
+                        since = max(since, rr["id"])
+                        if rr["id"] == cid:
+                            r = rr
+                            break
+                    if r is not None:
+                        break
+                if r is None:
+                    print(f"TEMPO ESGOTADO esperando o pedaço em offset {offset}"); return 3
+                if not r["ok"]:
+                    print(f"ERRO do agente no pedaço em offset {offset}:", r.get("error"))
+                    if baixado:
+                        print(f"  ({baixado} bytes já gravados em {local} — arquivo parcial)")
+                    return 2
+                data = r.get("data") or {}
+                raw = base64.b64decode(data.get("base64", ""))
+                if f is None:
+                    f = open(local, "wb")  # 1º pedaço válido chegou — agora sim
+                f.write(raw)
+                baixado += len(raw)
+                pedacos += 1
+                if data.get("bytes") is not None:
+                    bytes_agente = data["bytes"]
+                prox = data.get("proximoOffset")
+                if not prox:  # null/ausente = fim do arquivo
+                    break
+                offset = prox
+            else:
+                print(f"ERRO: {remoto} não terminou depois de 200 pedaços — desistindo (parcial em {local})")
+                return 2
+        except OSError as e:
+            print(f"ERRO ao gravar {local}: {e}")
+            return 1
+        finally:
+            if f is not None:
+                f.close()
+        if bytes_agente is not None and baixado != bytes_agente:
+            print(f"AVISO: o agente diz que o arquivo tem {bytes_agente} bytes, mas só {baixado} foram baixados")
+        print(f"OK: {remoto} ({baixado} bytes em {pedacos} pedaço(s)) → {local}")
+        return 0
     if sys.argv[1] == "enviar":  # codifica local em base64 → write_binary
         import base64
         local, remoto = sys.argv[2], sys.argv[3]

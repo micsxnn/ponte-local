@@ -43,7 +43,7 @@ aberta, nenhum SSH.
   antes de executar. Desde a v1.4.0, leitura universal: `file_info` identifica
   o formato por magic bytes (png, pdf, exe, mp4, zip) e `read_text`/
   `read_binary` leem arquivos de qualquer tamanho em pedaços (`offset` →
-  `proximoOffset`). Desde a v1.5.0, modo deus opcional (run_command sem
+  `proximoOffset`). Desde a v1.5.1, modo deus opcional (run_command sem
   confirmações s/N; a ativação é conversacional: a IA pergunta no chat depois
   de conectar) e skill que se auto-atualiza: o agente baixa a SKILL.md do repo
   no boot e a cada 60 s. Desde a v1.7.0, cada tarefa é fechada pela IA com
@@ -167,7 +167,7 @@ A referência completa, com argumentos exatos, está na
 ponte-local/
 ├── SKILL.md               ← entrada para IAs: instale e opere (comece aqui)
 ├── agente/
-│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.11.0)
+│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.12.0)
 │   ├── LEIA-ME.md         ← manual do agente no PC do usuário
 │   ├── rodar.sh           ← religa lendo ponte.config.json (Linux)
 │   ├── atualizar.sh       ← baixa a versão nova do agente (Linux)

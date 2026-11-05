@@ -1,5 +1,12 @@
 import { NextRequest } from "next/server";
-import { addCommand, isAdminAuthorized, laneTemToken, lanesComToken, LANE_RE } from "@/lib/ponte-store";
+import {
+  addCommand,
+  ErroPersistencia,
+  isAdminAuthorized,
+  laneTemToken,
+  lanesComToken,
+  LANE_RE,
+} from "@/lib/ponte-store";
 
 const MAX_BODY = 12_000_000; // 12 MB (comandos podem carregar base64 p/ write_binary)
 
@@ -62,10 +69,16 @@ export async function POST(req: NextRequest) {
     );
   }
   if (!laneTemToken(body.lane)) {
+    // v1.5.1: o sufixo do env só aceita A-Z, 0-9 e _ — sugerir o nome da lane
+    // em caixa alta puro (ex.: PONTE_TOKEN_MAQUINA-99) era receita inválida.
+    const sufixo = body.lane.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+    const hifen = body.lane.includes("-")
+      ? ` Obs.: lane com "-" nunca nasce de PONTE_TOKEN_* — prefira o nome com "_".`
+      : "";
     return Response.json(
       {
         ok: false,
-        error: `Lane "${body.lane}" sem token registrado — crie PONTE_TOKEN_${body.lane.toUpperCase()} no .env do relay e reinicie. Lanes com token: ${lanesComToken().join(", ") || "(nenhuma)"}`,
+        error: `Lane "${body.lane}" sem token — crie PONTE_TOKEN_${sufixo} no .env do relay (sufixo só com A-Z, 0-9 e _; a lane nasce com o sufixo em minúsculas, ex.: PONTE_TOKEN_MAQUINA_1 → lane maquina_1) e reinicie o relay.${hifen} Lanes atuais: ${lanesComToken().join(", ") || "(nenhuma)"}`,
       },
       { status: 400 }
     );
@@ -74,9 +87,11 @@ export async function POST(req: NextRequest) {
     const cmd = addCommand(body.action, body.args, body.lane);
     return Response.json({ ok: true, id: cmd.id, lane: cmd.lane });
   } catch (e) {
+    // v1.5.1: falha de persistência recusa o comando com 503 (não aceita em
+    // silêncio um id que o restart perderia); demais erros seguem 429.
     return Response.json(
       { ok: false, error: e instanceof Error ? e.message : "Erro ao enfileirar" },
-      { status: 429 }
+      { status: e instanceof ErroPersistencia ? 503 : 429 }
     );
   }
 }

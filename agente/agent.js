@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.11.0 (Windows + Linux)
+ * Ponte Local — Agente v1.12.0 (Windows + Linux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
- * operações de arquivo. Sem shell, sem execução de programas, sem rede além
- * do próprio relay.
+ * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
+ * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
+ * (alvos catastróficos inclusive a home literal, encadeamento com &, $(),
+ * backticks, pipes para interpretadores, xargs de destruição, aliases PS).
+ * Sem rede além do próprio relay.
  *
  *   node agent.js --server https://SEU-LINK --token SEU_TOKEN --save
  *
@@ -79,7 +82,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.11.0";
+const VERSION = "1.12.0";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -373,19 +376,27 @@ async function spinnerGaranteMinimo() {
 function quebraLargura(txt, larg) {
   const saida = [];
   for (const bruta of limpaAnsi(String(txt == null ? "" : txt)).replace(/\t/g, "    ").split("\n")) {
-    if ([...bruta].length <= larg) {
+    const chars = [...bruta];
+    if (chars.length <= larg) {
       saida.push(bruta);
       continue;
     }
-    let restante = bruta;
-    while ([...restante].length > larg) {
-      const pedaco = [...restante].slice(0, larg + 1).join("");
-      let pos = pedaco.lastIndexOf(" ");
-      if (pos <= 0) pos = larg;
-      saida.push([...restante].slice(0, pos).join(""));
-      restante = [...restante].slice(pos).join("").replace(/^\s+/, "");
+    // linear (v1.12.0): antes re-espalhava a string a cada volta — O(n²),
+    // e um stdout de 8 MB em linha única congelava o agente por minutos
+    let start = 0;
+    while (start < chars.length) {
+      let pos = -1;
+      for (let i = Math.min(start + larg, chars.length - 1); i > start; i--) {
+        if (chars[i] === " ") {
+          pos = i;
+          break;
+        }
+      }
+      if (pos <= start) pos = start + larg;
+      saida.push(chars.slice(start, pos).join(""));
+      start = pos;
+      while (start < chars.length && chars[start] === " ") start++;
     }
-    saida.push(restante);
   }
   return saida;
 }
@@ -491,20 +502,18 @@ function loadConfig(cli) {
 function saveConfig(c) {
   fs.writeFileSync(
     CONFIG_FILE,
-    JSON.stringify(
-      {
-        server: c.server,
-        token: c.token,
-        home: c.home,
-        run: !!c.run,
-        auto: !!c.auto,
-        godMode: !!c.godMode,
-        godModeDeclined: !!c.godModeDeclined,
-      },
-      null,
-      2,
-      { encoding: "utf8", mode: 0o600 } // token em texto plano: só o dono lê (v1.11.0)
-    )
+    JSON.stringify({
+      server: c.server,
+      token: c.token,
+      home: c.home,
+      run: !!c.run,
+      auto: !!c.auto,
+      godMode: !!c.godMode,
+      godModeDeclined: !!c.godModeDeclined,
+    }),
+    { encoding: "utf8", mode: 0o600 } // token em texto plano: só o dono lê
+    // (v1.12.0: as opções iam parar no JSON.stringify e o arquivo nascia 0644;
+    //  o chmod do boot consertava na releitura — agora nasce certo)
   );
 }
 
@@ -579,6 +588,12 @@ const BLOCKED_FILES = new Set([
 // config e log do agente levam token/histórico: bloqueados por CAMINHO REAL,
 // não por nome de pasta (antes bastava instalar fora de ~/ponte-agent)
 const CAMINHOS_PROTEGIDOS = new Set([path.resolve(CONFIG_FILE), path.resolve(LOG_FILE)]);
+// família do log (v1.12.0): a rotação cria ponte-log.jsonl.old — proteja o
+// prefixo inteiro, não só o nome exato (o .old escapava da leitura remota)
+const LOG_PREFIXO_PROTEGIDO = path.join(path.dirname(path.resolve(LOG_FILE)), "ponte-log.jsonl");
+function caminhoProtegido(rp) {
+  return CAMINHOS_PROTEGIDOS.has(rp) || String(rp).startsWith(LOG_PREFIXO_PROTEGIDO);
+}
 
 function assertAllowed(p) {
   let s = String(p);
@@ -621,7 +636,7 @@ function assertAllowed(p) {
   const parts = rel.split(path.sep).filter(Boolean);
   if (parts.some((part) => BLOCKED_DIRS.has(part)))
     throw new Error("Pasta protegida no caminho");
-  if (BLOCKED_FILES.has(path.basename(rp)) || CAMINHOS_PROTEGIDOS.has(rp))
+  if (BLOCKED_FILES.has(path.basename(rp)) || caminhoProtegido(rp))
     throw new Error("Arquivo protegido (credenciais/config do agente) — acesso remoto bloqueado");
   return rp;
 }
@@ -927,9 +942,15 @@ const ALVO_SISTEMA = /^(~\/?|\$HOME\/?|\/\*?|\/home\/?|\/home\/\*|\/boot(\/.*)?|
 // Alvos catastróficos no Windows (raiz de drive, pastas do sistema, home).
 const ALVO_SISTEMA_WIN = /^(?:[a-z]:\\?|[a-z]:\\windows(?:\\.*)?|[a-z]:\\program files(?: \(x86\))?(?:\\.*)?|\$home|~\/?|%systemroot%)$/i;
 
-function dangerCheck(cmdline) {
+function dangerCheck(cmdline, ctx) {
+  const homeRes = ctx && ctx.home ? path.resolve(String(ctx.home)) : null;
+  const cwdRes = ctx && ctx.cwd ? path.resolve(String(ctx.cwd)) : homeRes;
+  const homeRaw = ctx && ctx.home ? String(ctx.home) : null; // cru: no Linux, resolve() embaralha caminho Windows
   // fork bomb clássico: :(){ :|:& };:
   if (/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?/.test(cmdline)) return "fork bomb";
+  // expansão aninhada esconde o comando real do analisador (v1.12.0)
+  if (/\$\(/.test(cmdline) || /`/.test(cmdline) || />\(/.test(cmdline))
+    return "expansão de comando ($( ), backtick ou >() — reformule sem aninhamento";
   // formatar / apagar assinaturas de filesystem
   if (/\bmkfs(\.[a-z0-9]+)?\b/i.test(cmdline)) return "mkfs (formatar filesystem)";
   if (/\bwipefs\b/i.test(cmdline)) return "wipefs";
@@ -946,6 +967,9 @@ function dangerCheck(cmdline) {
   if (/\bfind\b[^|;&]*\s-delete\b/i.test(cmdline)) return "find -delete (remoção em massa)";
   if (/\bxargs\b\s+(?:-0\s+)?(?:sudo\s+)?(rm|dd|mkfs|shred)\b/i.test(cmdline))
     return "xargs com comando destrutivo";
+  // xargs com flags no meio (v1.12.0): "ls / | xargs -I{} rm -rf {}" passava
+  if (/\bxargs\b[^|;&]*\b(rm|dd|mkfs|shred)\b/i.test(cmdline))
+    return "xargs com comando destrutivo (flags no meio)";
   if (/(\||^)\s*(sudo\s+)?tee\s+[^|;&]*\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
     return "tee escrevendo em dispositivo";
   if (/(^|[^a-z0-9])>>?\s*\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
@@ -954,6 +978,10 @@ function dangerCheck(cmdline) {
     return "cp escrevendo em dispositivo";
   if (/\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/i.test(cmdline))
     return "script da internet executado direto no shell";
+  // pipe para interpretador de qualquer origem (v1.12.0): base64 -d|sh etc.
+  if (/\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/i.test(cmdline)) return "execução de shell via pipe";
+  if (/\|\s*(?:sudo\s+)?(?:python\d?|perl|ruby|php)\b/i.test(cmdline))
+    return "execução de interpretador via pipe";
   if (/\b(chmod|chown)\b\s+(-R|--recursive)\b[^|;&]*\s+\/(etc|usr|boot|var|lib|bin|sbin|opt)\b/i.test(cmdline))
     return "chmod/chown recursivo em pasta do sistema";
 
@@ -964,7 +992,7 @@ function dangerCheck(cmdline) {
     if (/^-/.test(f)) return /r/i.test(f.slice(1));
     return false;
   };
-  const segmentos = cmdline.split(/\n|;|&&|\|\||\|/);
+  const segmentos = cmdline.split(/\n|;|&&|\|\||\||&/);
   for (const seg of segmentos) {
     const m = seg.trim().match(/^(?:sudo\s+)?rm\s+(.+)$/);
     if (!m) continue;
@@ -981,6 +1009,16 @@ function dangerCheck(cmdline) {
         return "rm recursivo com '.'/'..' no alvo (" + alvo + ")";
       if (ALVO_SISTEMA.test(limpo))
         return "rm recursivo em alvo de sistema (" + alvo + ")";
+      // home literal e alvo relativo (v1.12.0): "rm -rf /home/u" e
+      // "cd / && rm -rf etc" passavam — resolve contra o cwd e re-testa
+      if (homeRes) {
+        const exp = /^~/.test(limpo) ? path.join(homeRes, limpo.slice(1)) : limpo;
+        const resolvido = path.isAbsolute(exp)
+          ? path.resolve(exp)
+          : path.resolve(cwdRes || homeRes, exp);
+        if (resolvido === homeRes || ALVO_SISTEMA.test(resolvido))
+          return "rm recursivo em alvo catastrófico (" + alvo + " → " + resolvido + ")";
+      }
     }
   }
   // ---- Windows (cmd.exe / PowerShell): catástrofes equivalentes ----
@@ -994,8 +1032,15 @@ function dangerCheck(cmdline) {
   // adjacentes — senão "C:\Program Files\app" quebra em "C:\Program"+"Files\app".
   const catWin = (alvo) => {
     let a = alvo.replace(/["']/g, "").trim();
-    a = a.replace(/\\?\*(?:\.\*)?$/, "").trim(); // C:\*.* → C:\ ; C:\* → C:\
+    a = a.replace(/^\\\\\?\\/, ""); // \\?\C:\ → C:\
+    if (homeRaw) a = a.replace(/^%USERPROFILE%(?=\\|\/|$)/i, homeRaw); // v1.12.0
+    a = a.replace(/\\?\*(?:\.\*)?$/, "").trim().replace(/[\\/]+$/, ""); // C:\*.* → C:\ ; C:\* → C:\
     if (!a) return false;
+    // home literal (v1.12.0): "rd /s /q C:\Users\u" passava — compara com a
+    // home real, além dos padrões ~/$HOME/%SYSTEMROOT%
+    if (homeRaw && a.toLowerCase() === homeRaw.replace(/[\\/]+$/, "").toLowerCase())
+      return true;
+    if (/^[a-z]:\\?(?:progra|program)~[12]$/i.test(a)) return true; // 8.3: PROGRA~1 (6 letras) — "program~" nunca casava (suíte 3-a)
     return ALVO_SISTEMA_WIN.test(a);
   };
   const acharAlvo = (resto, ehFlag) => {
@@ -1008,20 +1053,26 @@ function dangerCheck(cmdline) {
     }
     return null;
   };
-  for (const seg of cmdline.split(/\n|;|&&|\|\||\|/)) {
+  for (const seg of cmdline.split(/\n|;|&&|\|\||\||&/)) {
     const s = seg.trim();
-    const mRd = s.match(/^(?:rd|rmdir)\s+((?:\/[a-z]+\s+)*)(.+)$/i);
-    if (mRd && /\/s/i.test(mRd[1])) {
-      const alvo = acharAlvo(mRd[2], (t) => t.startsWith("/"));
+    // /s em QUALQUER posição (v1.12.0): "rd C:\ /s /q" passava — cmd.exe
+    // aceita a flag DEPOIS do alvo
+    const mRd = s.match(/^(?:rd|rmdir)\s+(.+)$/i);
+    if (mRd && /(?:^|\s)\/s\b/i.test(mRd[1])) {
+      const alvo = acharAlvo(mRd[1], (t) => t.startsWith("/"));
       if (alvo) return "rd recursivo em alvo de sistema (" + alvo + ")";
     }
-    const mDel = s.match(/^del\s+((?:\/[a-z]+\s+)*)(.+)$/i);
-    if (mDel && /\/s/i.test(mDel[1])) {
-      const alvo = acharAlvo(mDel[2], (t) => t.startsWith("/"));
+    const mDel = s.match(/^del\s+(.+)$/i);
+    if (mDel && /(?:^|\s)\/s\b/i.test(mDel[1])) {
+      const alvo = acharAlvo(mDel[1], (t) => t.startsWith("/"));
       if (alvo) return "del /s em alvo de sistema (" + alvo + ")";
     }
-    if (/\bremove-item\b/i.test(s) && /-recurse/i.test(s)) {
-      const depois = s.replace(/^[\s\S]*?\bremove-item\b\s*/i, "");
+    // aliases PowerShell (v1.12.0): ri/del/erase = Remove-Item; -r = -Recurse
+    const psNorm = s
+      .replace(/\bri\b/gi, "Remove-Item")
+      .replace(/\s-r\b(?![a-z-])/gi, " -Recurse");
+    if (/\bremove-item\b/i.test(psNorm) && /-recurse/i.test(psNorm)) {
+      const depois = psNorm.replace(/^[\s\S]*?\bremove-item\b\s*/i, "");
       const alvo = acharAlvo(depois, (t) => t.startsWith("-"));
       if (alvo) return "Remove-Item recursivo em alvo de sistema (" + alvo + ")";
     }
@@ -1044,12 +1095,20 @@ function executarComando(cmdline, cwd, timeoutMin) {
   const t0 = Date.now();
   const win = process.platform === "win32";
   return new Promise((resolve) => {
+    let timerGrupo = null; // limpo no fim natural; no timeout é que ele DEVE disparar
     const fim = (err, stdout, stderr) => {
+      const morto = !!(err && err.killed);
+      if (!morto && timerGrupo) {
+        clearTimeout(timerGrupo);
+        timerGrupo = null;
+      }
       resolve({
         code: err && typeof err.code === "number" ? err.code : err ? 1 : 0,
         stdout: String(stdout || ""),
         stderr: String(stderr || ""),
-        mortoPorTimeout: !!(err && err.killed),
+        // só é timeout se o relógio confirma (v1.12.0: err.killed também
+        // acontece no estouro do maxBuffer, que não é timeout)
+        mortoPorTimeout: morto && Date.now() - t0 >= timeoutMin * 60000 - 1500,
         ms: Date.now() - t0,
       });
     };
@@ -1085,8 +1144,8 @@ function executarComando(cmdline, cwd, timeoutMin) {
     }
     if (child && typeof child.on === "function") {
       child.on("spawn", () => {
-        const t = setTimeout(matarGrupo, timeoutMin * 60000 + 500);
-        if (t.unref) t.unref();
+        timerGrupo = setTimeout(matarGrupo, timeoutMin * 60000 + 500);
+        if (timerGrupo.unref) timerGrupo.unref();
       });
     }
   });
@@ -1100,8 +1159,11 @@ const corta150k = (s) => (s.length > 150000 ? s.slice(0, 150000) + "\n…[saída
 function mostraOutput(out) {
   if (!out) return;
   try {
+    // trunca ANTES da caixa (v1.12.0): a quebra de linha era O(n²) e um
+    // stdout de linha única grande congelava o agente por minutos
+    const vis = { stdout: corta150k(String(out.stdout || "")), stderr: corta150k(String(out.stderr || "")) };
     escreve("\n");
-    escreve(caixaOutput("output", out.stdout, out.stderr, out.code) + "\n\n");
+    escreve(caixaOutput("output", vis.stdout, vis.stderr, out.code) + "\n\n");
     if (out.mortoPorTimeout)
       log("O comando foi morto por timeout — a caixa acima pode estar incompleta.");
   } catch (_) {
@@ -2110,12 +2172,12 @@ const ACTIONS = {
     const cmdline = String(args.command == null ? "" : args.command).trim();
     if (!cmdline) throw new Error("Comando vazio");
     if (cmdline.length > 4000) throw new Error("Comando grande demais (limite 4000 caracteres)");
-    const cwd = args.cwd ? path.resolve(String(args.cwd)) : cfg.home;
+    const cwd = args.cwd ? path.resolve(cfg.home, String(args.cwd)) : cfg.home;
     const timeoutMin = Math.min(30, Number(args.timeoutMin) || 3);
 
     // ---- modo autônomo/modo deus: executa direto, exceto padrões catastróficos
     if (cfg.auto || cfg.godMode) {
-      const perigo = dangerCheck(cmdline);
+      const perigo = dangerCheck(cmdline, { home: cfg.home, cwd });
       if (perigo) {
         audit({ action: "run_command", resumo: "AUTO-BLOQUEADO (" + perigo + "): " + cmdline.slice(0, 200) });
         throw new Error(
@@ -2734,6 +2796,7 @@ if (require.main === module) main().catch((e) => fail(e.message));
 // Exporta apenas para testes automatizados (nada roda quando requerido).
 module.exports = {
   dangerCheck,
+  caminhoProtegido,
   ALVO_SISTEMA,
   ALVO_SISTEMA_WIN,
   VERSION,

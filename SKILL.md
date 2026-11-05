@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.8.2 -->
+<!-- skill-version: 3.8.4 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -142,9 +142,9 @@ curl -s "$PONTE_URL/api/ponte/results?since=76" \
 4. Daí em diante, a tabela da **Fase 4** vale igual — mesmas ações, mesmos
    limites. Texto, JSON e base64 cabem no curl; para arquivos grandes use
    `read_binary`/`read_text` por pedaços (funciona no curl) ou o `ponte.py
-   enviar/pegar` na SUA máquina, se tiver Python — ATENÇÃO: o `pegar` baixa
-   só o 1º pedaço (~6 MB); arquivo maior que isso tem que ir por `read_binary`
-   em pedaços seguindo o `proximoOffset`.
+   enviar/pegar` na SUA máquina, se tiver Python — o `pegar` segue o
+   `proximoOffset` sozinho (pedaços de ~6 MB, teto de 200) e reporta o
+   tamanho REAL baixado; nada de truncamento silencioso.
 
 **Sobre a URL de quem hospeda:** a ponte pode rodar num preview de plataforma
 (ex.: z.ai) e mesmo assim ser operada por Claude, Manus ou um terminal
@@ -201,6 +201,36 @@ npm run dev                                        # porta 3000
 Tokens um POR MÁQUINA (lane própria) e sempre via ambiente — de preferência no
 `.env` do projeto (o Next lê sozinho); nada hardcoded no código, nada
 versionado no repo.
+
+**Regras do nome da lane (onde TODO agente se confunde — leia devagar):**
+
+- O nome da lane vem do SUFIXO da variável: `PONTE_TOKEN_MAQUINA_1` cria a
+  lane `maquina_1` (sufixo em minúsculas, com `_`).
+- O sufixo só aceita **A-Z, 0-9 e `_`** — variável de ambiente NÃO aceita `-`.
+  Quer a lane `escritorio`? `PONTE_TOKEN_ESCRITORIO`. Uma lane chamada
+  "maquina-1" não existe e nunca vai existir — a certa é `maquina_1`.
+- Trocou/gerou token no `.env`? **REINICIE o relay** — a lane nasce no boot do
+  relay; sem restart o `/cmd` responde "lane sem token" e você vai achar que é
+  erro de digitação (a mensagem de erro do relay 1.5.1+ já ensina isso).
+- Uma linha por máquina no `.env`; máquina nova = linha nova. Nunca reuse o
+  token de uma máquina em outra — a lane É a máquina.
+
+**O BLOCO DE ENTREGA (modelo canônico — é assim que o token chega ao usuário):**
+Na instalação de cada máquina, entregue NO CHAT PRIVADO, **UM bloco POR
+MÁQUINA**, com o comando já pronto para rodar NA máquina que está sendo
+instalada. Nunca dois tokens no mesmo bloco; nunca cole o `.env` inteiro.
+
+> **Máquina X — rode este comando NELA** (o token abaixo é SÓ dela):
+> ```bash
+> mkdir -p ~/ponte-agent; cd ~/ponte-agent
+> curl -fsSL "URL_PUBLICA/api/ponte/download" -o agent.js
+> node agent.js --server "URL_PUBLICA" --token TOKEN_DA_MAQUINA_X --auto --save
+> node agent.js
+> ```
+
+Checklist antes de entregar: a URL é a PÚBLICA (não localhost), o token é o da
+lane certa, e quem roda é a máquina certa. Depois de rodar, confirme no
+`/status`: a lane da máquina tem que aparecer `conectado:true`.
 
 **Regra de ouro (houve incidente real de vazamento — não repita):** token
 nenhum vai para o repo, para a SKILL.md, para screenshot ou para chat além da

@@ -82,7 +82,7 @@ PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)      # operador/IA (nunca sai da VM)
 - Lane antiga cujo token saiu do `.env` não perde o histórico: o `/status`
   a mostra marcada `semToken:true` até o estado ser limpo.
 
-Trocou um token? Atualize o relay e religue o agente com `--token NOVO --save`.
+Trocou um token? **REINICIE o relay** (a lane nasce no boot dele) e religue o agente com `--token NOVO --save`.
 
 Estado da fila/resultados vive em `globalThis` (`__ponteState2`) e, desde o
 relay **v1.2.0**, persiste em `.ponte-estado.json` ao lado do projeto

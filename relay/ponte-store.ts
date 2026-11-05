@@ -33,6 +33,17 @@
 //   com menos de 24h da lane. Comando enfileirado durante queda deixa de
 //   virar órfão. Comando com mais de 24h é considerado morto.
 // - Janela de "conectado" de 45 s (soluços de rede não apagam a luz).
+//
+// Correções (v1.5.1):
+// - Dono por id (lanePorId): resultado para id de OUTRA lane é recusado mesmo
+//   depois que o comando sai do histórico (antes, id na janela global
+//   `respondidos` fora da janela de results aceitava resultado de qualquer token).
+// - Resultado com data >200k chars é cortado ANTES de entrar em memória
+//   (antes cortava só no snapshot — a memória crescia sem teto).
+// - Poll entrega no máximo ~32 MB de args por chamada (resto fica pendente).
+// - Persistência falhou → comando novo é recusado com 503 (não aceita em
+//   silêncio um id que o restart perderia).
+// - Mensagem de lane sem token não sugere mais env com hífen (env não aceita).
 
 import fs from "fs";
 import path from "path";
@@ -71,6 +82,7 @@ interface PonteState {
   results: PonteResult[]; // histórico (capado)
   respondidos: number[]; // ids com resultado confirmado — sobrevive à poda dos 400 resultados
   claimed: Map<number, number>; // id do comando → timestamp do claim (entrega exclusiva)
+  lanePorId: Map<number, LaneId>; // v1.5.1: id do comando → lane dona (sobrevive à poda do histórico)
   lanes: Record<string, LaneState>;
   startedAt: number;
   totalCommands: number;
@@ -80,8 +92,16 @@ interface PonteState {
 const g = globalThis as unknown as {
   __ponteState2?: PonteState;
   __pontePersistTimer?: ReturnType<typeof setInterval>;
+  __pontePersistTimerGen?: object; // v1.5.1: geração do módulo dona do timer (HMR)
   __ponteDirty?: boolean;
+  __pontePersistFalha?: string | null; // v1.5.1: última falha de persistência (null = ok)
 };
+
+// Identidade desta instância do módulo (v1.5.1): após HMR, o timer do módulo
+// velho seguia vivo e gravava snapshot no formato antigo por cima do novo
+// (perdia lanePorId). A geração deixa o módulo atual replantar o timer.
+
+const GERACAO_MODULO = {};
 
 const MAX_RESULTS = 400;
 const MAX_PENDING = 100; // por lane
@@ -139,7 +159,7 @@ export function lanesComToken(): string[] {
 
 export const ADMIN_TOKEN = tokensEnv("PONTE_ADMIN_TOKEN")[0] ?? "";
 
-export const PONTE_VERSION = "1.5.0";
+export const PONTE_VERSION = "1.5.1";
 export const CONNECTED_WINDOW_MS = 45_000;
 
 // Arquivos de estado ao lado do projeto (funciona em qualquer deploy):
@@ -186,6 +206,7 @@ interface Snapshot {
   commands: PonteCommand[]; // só pendentes <24h — o resto é histórico morto
   results: PonteResult[];
   respondidos: number[]; // ids JÁ respondidos (sobrevive à poda do histórico)
+  lanePorId: [number, LaneId][]; // v1.5.1: dono de cada id (sobrevive à poda dos comandos)
   lanes: Record<string, LaneState>;
   totalCommands: number;
   totalResults: number;
@@ -273,6 +294,12 @@ function loadSnapshot(): Snapshot | null {
       respondidos: Array.isArray(raw.respondidos)
         ? (raw.respondidos as unknown[]).filter((x): x is number => typeof x === "number").slice(-2000)
         : [],
+      lanePorId: (Array.isArray(raw.lanePorId) ? (raw.lanePorId as unknown[]) : [])
+        .filter(
+          (p): p is [number, LaneId] =>
+            Array.isArray(p) && typeof p[0] === "number" && typeof p[1] === "string" && LANE_RE.test(p[1])
+        )
+        .slice(-2000),
       lanes,
       totalCommands: typeof raw.totalCommands === "number" ? raw.totalCommands : 0,
       totalResults: typeof raw.totalResults === "number" ? raw.totalResults : 0,
@@ -282,8 +309,9 @@ function loadSnapshot(): Snapshot | null {
   }
 }
 
-// Resultado com data gigante (base64 de read_binary etc.) entra no snapshot
-// sem o payload — histórico útil, arquivo enxuto.
+// Resultado com data gigante (base64 de read_binary etc.) entra sem o payload.
+// v1.5.1: o corte acontece ANTES do push em memória — antes só o snapshot
+// cortava e a memória crescia sem teto em sequência de resultados grandes.
 function resultadoParaSnapshot(r: PonteResult): PonteResult {
   if (r.data === undefined || r.data === null) return r;
   try {
@@ -291,7 +319,7 @@ function resultadoParaSnapshot(r: PonteResult): PonteResult {
   } catch {
     return { ...r, data: undefined };
   }
-  return { ...r, data: { _cortado: "payload grande não persistido (ver resultado ao vivo)" } };
+  return { ...r, data: { _cortado: "payload grande não armazenado (>200k chars)" } };
 }
 
 export function saveSnapshot(s: PonteState): void {
@@ -307,6 +335,7 @@ export function saveSnapshot(s: PonteState): void {
       commands: pendentes,
       results: s.results.slice(-MAX_RESULTS).map(resultadoParaSnapshot),
       respondidos: s.respondidos.slice(-2000),
+      lanePorId: Array.from(s.lanePorId.entries()).slice(-2000),
       lanes: s.lanes,
       totalCommands: s.totalCommands,
       totalResults: s.totalResults,
@@ -314,7 +343,9 @@ export function saveSnapshot(s: PonteState): void {
     const tmp = SNAPSHOT_FILE + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify(snap));
     fs.renameSync(tmp, SNAPSHOT_FILE); // atômico: nunca deixa arquivo pela metade
+    g.__pontePersistFalha = null; // v1.5.1: persistência voltou — libera addCommand
   } catch (e) {
+    g.__pontePersistFalha = e instanceof Error ? e.message : String(e);
     avisaFalhaPersist("snapshot", e);
   }
 }
@@ -324,9 +355,13 @@ function markDirty(): void {
 }
 
 function startAutoPersist(): void {
-  if (g.__pontePersistTimer) return;
+  if (g.__pontePersistTimer && g.__pontePersistTimerGen === GERACAO_MODULO) return;
+  if (g.__pontePersistTimer) clearInterval(g.__pontePersistTimer); // timer de módulo velho (HMR)
+  g.__pontePersistTimerGen = GERACAO_MODULO;
   g.__pontePersistTimer = setInterval(() => {
-    if (g.__ponteDirty) {
+    // v1.5.1: com falha de persistência ativa, tenta de novo mesmo sem
+    // mudança — é o caminho de recuperação que libera addCommand de novo.
+    if (g.__ponteDirty || g.__pontePersistFalha) {
       g.__ponteDirty = false;
       saveSnapshot(ponte());
     }
@@ -342,21 +377,23 @@ export function ponte(): PonteState {
       results: snap?.results ?? [],
       respondidos: snap?.respondidos ?? [],
       claimed: new Map(), // lease não persiste: restart = entrega liberada (é o que queríamos)
+      lanePorId: new Map(snap?.lanePorId ?? []), // v1.5.1: dono por id sobrevive ao restart
       lanes: snap?.lanes ?? lanesPadrao(),
       startedAt: Date.now(),
       totalCommands: snap?.totalCommands ?? 0,
       totalResults: snap?.totalResults ?? 0,
     };
-    startAutoPersist();
   }
   const s = g.__ponteState2;
   // Defesa contra HMR/estados antigos em memória
   if (!s.claimed) s.claimed = new Map();
+  if (!(s.lanePorId instanceof Map)) s.lanePorId = new Map(); // v1.5.1
   if (!Array.isArray(s.commands)) s.commands = [];
   if (!Array.isArray(s.results)) s.results = [];
   if (!Array.isArray(s.respondidos)) s.respondidos = [];
   if (!s.lanes) s.lanes = lanesPadrao();
   else for (const id of LANE_IDS) if (!s.lanes[id]) s.lanes[id] = { lastSeen: 0, agentInfo: null };
+  startAutoPersist(); // v1.5.1: assumir o timer também após HMR (troca de geração)
   return s;
 }
 
@@ -386,6 +423,14 @@ function temResultado(s: PonteState, id: number): boolean {
   return s.results.some((r) => r.id === id) || s.respondidos.includes(id);
 }
 
+// v1.5.1: persistência quebrada = comando recusado, não aceito em silêncio.
+export class ErroPersistencia extends Error {
+  constructor(mensagem: string) {
+    super(mensagem);
+    this.name = "ErroPersistencia";
+  }
+}
+
 export function addCommand(
   action: string,
   args?: Record<string, unknown>,
@@ -395,6 +440,14 @@ export function addCommand(
     throw new Error("Lane ausente ou inválida");
   }
   const s = ponte();
+  // v1.5.1: aceitar comando com a última persistência falhada criava id que o
+  // restart perdia (seq/snapshot antigos) — comando nunca entregue e reuso de
+  // id. O timer de snapshot tenta de novo a cada 4 s; sucesso libera de novo.
+  if (g.__pontePersistFalha) {
+    throw new ErroPersistencia(
+      `Relay sem persistência (última falha: ${g.__pontePersistFalha}) — comando recusado para não criar id que se perde no restart. Resolva o disco/PONTE_DATA_DIR; o relay tenta gravar de novo a cada ${SNAPSHOT_EVERY_MS / 1000}s e volta a aceitar.`
+    );
+  }
   podarCommands(s);
   const pending = s.commands.filter((c) => c.lane === lane && !temResultado(s, c.id));
   if (pending.length >= MAX_PENDING) {
@@ -405,6 +458,11 @@ export function addCommand(
   saveSeq(s.seq);
   const cmd: PonteCommand = { id: s.seq, action, args: args ?? {}, ts: Date.now(), lane };
   s.commands.push(cmd);
+  s.lanePorId.set(cmd.id, lane); // v1.5.1: dono do id sobrevive à poda do histórico
+  if (s.lanePorId.size > 2000) {
+    const maisVelho = s.lanePorId.keys().next().value;
+    if (maisVelho !== undefined) s.lanePorId.delete(maisVelho);
+  }
   saveSnapshot(s); // comando é precioso (tem efeito real): persiste na hora
   return cmd;
 }
@@ -419,9 +477,41 @@ function podarCommands(s: PonteState): void {
   if (s.commands.length > MAX_COMMANDS) {
     const pendentes = s.commands.filter((c) => !temResultado(s, c.id));
     const espaco = Math.max(0, MAX_COMMANDS - pendentes.length);
-    const feitos = s.commands.filter((c) => temResultado(s, c.id)).slice(-espaco);
+    // v1.5.1: espaco=0 fazia slice(-0) === slice(0) devolver TODOS os feitos
+    // (histórico crescia além do teto). Ternário explícito.
+    const feitos = espaco > 0 ? s.commands.filter((c) => temResultado(s, c.id)).slice(-espaco) : [];
     s.commands = [...pendentes, ...feitos].sort((a, b) => a.id - b.id);
   }
+}
+
+// v1.5.1: teto agregado dos args entregues por poll (~32 MB). Uma enxurrada de
+// comandos com base64 não pode estourar a memória do agente numa entrega só:
+// entrega por ordem de id os que couberem; o resto fica para o próximo poll.
+const POLL_TETO_ARGS = 32 * 1024 * 1024;
+
+function pesoArgs(c: PonteCommand): number {
+  try {
+    return JSON.stringify(c.args ?? {}).length;
+  } catch {
+    return 0;
+  }
+}
+
+function cabemNoTeto(cmds: PonteCommand[]): { entregues: PonteCommand[]; cortado: boolean } {
+  const ordenados = [...cmds].sort((a, b) => a.id - b.id);
+  const entregues: PonteCommand[] = [];
+  let total = 0;
+  for (const c of ordenados) {
+    const peso = pesoArgs(c);
+    // o primeiro comando sempre passa (entrega única maior que o teto não
+    // pode travar a fila para sempre; /cmd limita corpo a 12 MB)
+    if (entregues.length > 0 && total + peso > POLL_TETO_ARGS) {
+      return { entregues, cortado: true };
+    }
+    entregues.push(c);
+    total += peso;
+  }
+  return { entregues, cortado: false };
 }
 
 export function pollCommands(
@@ -439,12 +529,17 @@ export function pollCommands(
     if (claimedAt && now - claimedAt < CLAIM_LEASE_MS) return false;
     return true;
   });
-  for (const c of pending) s.claimed.set(c.id, now);
+  const { entregues, cortado } = cabemNoTeto(pending); // v1.5.1: teto por poll
+  for (const c of entregues) s.claimed.set(c.id, now); // só o entregado é reclamado
   if (s.claimed.size > 500) {
     for (const [id, t] of s.claimed) if (now - t > CLAIM_LEASE_MS) s.claimed.delete(id);
   }
   const maxId = s.commands.length ? s.commands[s.commands.length - 1].id : cursor;
-  return { commands: pending, nextCursor: Math.max(maxId, cursor) };
+  // cortado: o cursor NÃO passa pelos não entregues — ficam para o próximo poll
+  const nextCursor = cortado
+    ? Math.max(cursor, entregues.length ? entregues[entregues.length - 1].id : 0)
+    : Math.max(maxId, cursor);
+  return { commands: entregues, nextCursor };
 }
 
 // Reconexão (poll sem cursor): NÃO pula a fila. Entrega os pendentes
@@ -461,15 +556,20 @@ export function pollFresh(lane: LaneId): { commands: PonteCommand[]; nextCursor:
     if (claimedAt && now - claimedAt < CLAIM_LEASE_MS) return false;
     return true;
   });
-  for (const c of pendings) s.claimed.set(c.id, now);
+  const { entregues, cortado } = cabemNoTeto(pendings); // v1.5.1: teto por poll
+  for (const c of entregues) s.claimed.set(c.id, now);
   const maxId = s.commands.length ? s.commands[s.commands.length - 1].id : 0;
-  return { commands: pendings, nextCursor: maxId };
+  // cortado: cursor fica no último entregue — o resto vem no poll seguinte
+  return {
+    commands: entregues,
+    nextCursor: cortado ? (entregues.length ? entregues[entregues.length - 1].id : 0) : maxId,
+  };
 }
 
 export function pushResult(r: PonteResult): void {
   const s = ponte();
   s.totalResults += 1;
-  s.results.push(r);
+  s.results.push(resultadoParaSnapshot(r)); // v1.5.1: corta ANTES de entrar em memória
   if (s.results.length > MAX_RESULTS) s.results = s.results.slice(-MAX_RESULTS);
   if (!s.respondidos.includes(r.id)) {
     s.respondidos.push(r.id);
@@ -509,5 +609,9 @@ export function isConnected(lane: LaneId): boolean {
 }
 
 export function pendentesDaLane(s: PonteState, lane: LaneId): number {
-  return s.commands.filter((c) => c.lane === lane && !s.results.some((r) => r.id === c.id)).length;
+  // v1.5.1: usa temResultado (results + respondidos) — olhar só `results`
+  // contava pendente fantasma para id respondido já podado do histórico.
+  return s.commands.filter((c) => c.lane === lane && !temResultado(s, c.id)).length;
 }
+
+// (reload trigger: ambiente restaurado após reboot da VM — nenhuma mudança de lógica)

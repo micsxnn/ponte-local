@@ -20,6 +20,8 @@ const MAX_BODY = 12_000_000; // 12 MB (resultados podem carregar base64 p/ read_
 // v1.5.0: resultado DUPLICADO é idempotente — o agente 1.11.0 tem retry de
 // resultado (rede falhou depois do comando rodar), então o mesmo id pode
 // chegar duas vezes. Antes o retry inflava histórico e totalResults.
+// v1.5.1: dono por id (lanePorId no store) — resultado para id de OUTRA lane
+// é recusado mesmo com o comando fora do histórico (janela respondidos).
 export async function POST(req: NextRequest) {
   const token = req.headers.get("x-ponte-token");
   const lane = laneForAgent(token);
@@ -59,11 +61,20 @@ export async function POST(req: NextRequest) {
   if (cmd && cmd.lane !== lane) {
     return Response.json({ ok: false, error: "Esse comando pertence a outra lane" }, { status: 403 });
   }
+  // v1.5.1: dono por id (lanePorId) — cobre o comando que JÁ SAIU do histórico:
+  // antes, id na janela global `respondidos` (fora da janela de results)
+  // aceitava resultado de token de qualquer lane.
+  const dona = s.lanePorId.get(body.id);
+  if (dona && dona !== lane) {
+    return Response.json({ ok: false, error: "Esse comando pertence a outra lane" }, { status: 403 });
+  }
   const jáTem = s.results.find((r) => r.id === body.id);
   if (jáTem && jáTem.lane !== lane) {
     return Response.json({ ok: false, error: "Esse resultado pertence a outra lane" }, { status: 403 });
   }
-  if (!cmd && !jáTem && !s.respondidos.includes(body.id)) {
+  // v1.5.1: dona === lane também libera (resultado atrasado de comando podado
+  // da PRÓPRIA lane vale); id sem rastro de dono mantém o comportamento antigo.
+  if (!cmd && !jáTem && dona !== lane && !s.respondidos.includes(body.id)) {
     return Response.json(
       { ok: false, error: "Comando desconhecido nesta lane — resultado recusado" },
       { status: 404 }
