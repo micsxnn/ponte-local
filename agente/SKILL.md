@@ -19,6 +19,17 @@ description: >-
 
 <!-- skill-version: 3.6.4 -->
 
+> ⚠️ **VARIANTE CONGELADA (3.6.4) — LEIA ISTO ANTES DE QUALQUER COISA.**
+> Este arquivo é o manual ANTIGO, para uma IA que já está DENTRO da pasta do
+> agente na máquina do usuário. A skill VIVA — a que o agente baixa do repo
+> (boot + a cada 60 s) e a que ensina a instalar/operar hoje — é a **SKILL.md
+> da RAIZ do repo** (`skill-version` 4.x). NÃO siga daqui: (a) os blocos de
+> instalação sem `--auto` (a raiz entrega com `--auto --save`); (b) os tokens
+> exportados no shell (`PONTE_TOKEN_*` de terminal — hoje nascem no `.env` do
+> relay, com restart); (c) as "4 Leis + 13 regras" (a raiz tem 5 Leis, com
+> numeração própria); (d) os limites antigos. Se você é uma IA escolhendo qual
+> dos dois ler: **leia a da raiz e descarte este.**
+
 # Ponte Local — skill de operação remota do PC do usuário
 
 Você (a IA) comanda um relay que fala com um agente instalado no PC do usuário.

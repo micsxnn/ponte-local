@@ -17,7 +17,7 @@ description: >-
   hospedar nada.
 ---
 
-<!-- skill-version: 4.0.0 -->
+<!-- skill-version: 4.1.0 -->
 
 # Ponte Local — operação remota do PC do usuário
 
@@ -85,10 +85,11 @@ O agente grava `relatorio-ponte.txt` e abre na tela do usuário com a seção
 algo errou). Para ele, "a ponte funcionou" = a janela abrir. Redes de
 segurança do agente (não são licença para esquecer): pausa de 3 min entre
 comandos fecha a tarefa sozinha (env `PONTE_TAREFA_GAP_MS`, mínimo 1 s) e o
-encerramento do agente gera o relatório antes de sair. A tarefa seguinte (ou o
-boot do agente) fecha a janela anterior e apaga o txt — se a máquina não tem
-interface gráfica e o relatório nunca abriu, o txt NÃO é apagado: é a única
-cópia e o caminho fica impresso no terminal. `ping` e `task_done` não contam
+encerramento do agente gera o relatório antes de sair. A tarefa seguinte fecha a janela
+anterior e apaga o txt; o BOOT do agente TAMBÉM apaga o txt anterior mesmo que
+nunca tenha abrido — em máquina sem interface gráfica, salve o conteúdo do txt
+ANTES de religar o agente (é a única cópia; o caminho fica impresso no
+terminal). `ping` e `task_done` não contam
 como trabalho; `task_done` sem comando de trabalho devolve `abriuRelatorio:false`.
 **Diga assim, na primeira tarefa:** "quando eu terminar, uma janela de
 relatório abre na sua tela. Se não abrir, me avisa."
@@ -113,27 +114,33 @@ aceite novo limpa a recusa). Desligar é livre, sem pergunta:
 `run_command` de uma ponte instalada sem `--auto`/`--allow-run` — a decisão
 sempre é dele, o terminal é que não precisa de flag.
 
-**Lei 4 — A trava anticatástrofe é intransponível.** O agente recusa
-localmente, em qualquer modo (nem modo deus contorna, nem com aprovação):
-fork bomb, expansão de comando (`$( )`, backtick, `>( )`), `mkfs`, `wipefs`,
-`dd of=/dev/*`, `shred` em dispositivo, escrita em `/dev/*`, `find -delete`,
-`xargs` com comando destrutivo (com ou sem flags no meio), pipe para
-interpretador (`| sh`, `| python`…), `curl | sh`, `chmod/chown -R` em pasta do
-sistema, `rm -r` em `/`, `/*`, `/home`, `~`, `$HOME`, `/boot`, `/etc`, `/usr`,
-`/var`, `/lib`, `/opt`, `/mnt`, `/media`, variável não resolvida, `.`/`..` e a
-home literal. Windows: `format`, `diskpart`, `cipher /w`,
-`vssadmin delete shadows`, `rd|rmdir /s` e `del /s` (flag em qualquer
-posição), `Remove-Item -Recurse` e aliases (`ri`, `del`, `erase`, `-r`) na
-raiz de drive, `C:\Windows`, `C:\Program Files` (inclui `C:\PROGRA~1`),
-`%USERPROFILE%` e home literal. **Nunca tente contornar.**
+**Lei 4 — A trava anticatástrofe é intransponível ONDE ELA RODA.** Ela roda no
+modo autônomo e no modo deus — nesses dois, nem modo deus contorna, nem
+aprovação. Em modo SUPERVISIONADO a trava NÃO roda: a proteção lá é o usuário,
+que aprova cada comando com `s`. Bloqueados na trava: fork bomb, expansão de
+comando (`$( )`, backtick, `>( )`), `mkfs`, `wipefs`, `dd of=` e `shred` em
+dispositivo clássico (`sd*`, `nvme*`, `mmcblk*`, `hd*`, `vd*`, `loop*`),
+escrita em `/dev/*`, `find -delete`, `xargs` com comando destrutivo (com ou
+sem flags no meio), pipe para interpretador (`| sh`, `| python`…), `curl | sh`,
+`chmod/chown -R` em pasta do sistema, `rm -r` em `/`, `/*`, `/home`, `~`,
+`$HOME`, `/boot`, `/etc`, `/usr`, `/var`, `/lib`, `/opt`, `/mnt`, `/media`,
+variável não resolvida, `.`/`..` e a home literal. Windows: `format`,
+`diskpart`, `cipher /w`, `vssadmin delete shadows`, `rd|rmdir /s` e `del /s`
+(flag em qualquer posição), `Remove-Item -Recurse` e o alias `ri` na raiz de
+drive, `C:\Windows`, `C:\Program Files` (inclui `C:\PROGRA~1`),
+`%USERPROFILE%` e home literal. A lista acima é o que está BLOQUEADO — padrão
+fora dela não tem garantia: antes de comando destrutivo incomum (disco fora
+do padrão, `/dev/mapper/…`, apagador exótico), confirme o alvo com o usuário
+NO CHAT. **Nunca tente contornar.**
 
 **Lei 5 — Token nenhum vaza.** Tokens vivem no `.env` do relay e vão ao
 usuário uma única vez, NO CHAT PRIVADO, **um bloco por máquina** (só o token
 daquela máquina). Nunca em repo, screenshot, log ou chat público. Token que
 apareceu em arquivo versionado é token QUEIMADO: gere outro
-(`openssl rand -hex 16`), troque no `.env` e reinstale na máquina. O `/status`
-e o painel são privados: respondem 401 sem o header `x-ponte-admin` e não
-revelam nem que as máquinas existem. O atalho `?admin=` saiu do ar (token em
+(`openssl rand -hex 16`), troque no `.env` e reinstale na máquina. O `/status` é
+privado: responde 401 sem o header `x-ponte-admin` — a página do painel abre
+com tela de login (200), quem valida o token é a API por trás — e nada é
+revelado sem token, nem que as máquinas existem. O atalho `?admin=` saiu do ar (token em
 URL vira registro em log de gateway) — é só o header.
 
 ## 2. A ponte já está no ar?
@@ -177,7 +184,8 @@ ponte-local/
 │                          rodar.sh, atualizar.sh, rodar.bat, watchdog.bat,
 │                          teste-trava.cjs
 ├── relay/              ← LADO DO SERVIDOR: ponte-store.ts, api/<rota>/route.ts,
-│                          painel/, RESTAURAR.md (hospedar em VPS com domínio fixo)
+│                          painel/, RESTAURAR.md (reconstruir o relay após
+│                          reset da VM de preview)
 └── operador/           ← CLI sua na VM: ponte.py, teste-pegar-mock.py
 ```
 
@@ -218,9 +226,19 @@ openssl rand -hex 16
 
 ```ini
 # ONDE: no seu servidor/VM — arquivo .env do projeto (a pasta do relay)
-PONTE_ADMIN_TOKEN=cole-aqui-o-valor-gerado        # só seu
-PONTE_TOKEN_MAQUINA_1=cole-aqui-o-valor-gerado    # lane maquina_1
-PONTE_TOKEN_MAQUINA_2=cole-aqui-o-valor-gerado    # só se houver 2ª máquina
+# NÃO ponha comentário na MESMA linha do valor: o comando de validação
+# abaixo faz cut no "=" e um "# ..." na linha suja o header (401 falso).
+PONTE_ADMIN_TOKEN=cole-aqui-o-valor-gerado
+PONTE_TOKEN_MAQUINA_1=cole-aqui-o-valor-gerado
+# PONTE_TOKEN_MAQUINA_2=cole-aqui-o-valor-gerado   ← só se houver 2ª máquina
+```
+
+Carregue o token de admin AGORA — os curls dos Passos 2, 3 e 5 usam
+`$PONTE_ADMIN_TOKEN` (exportar só no § 4 é tarde):
+
+```bash
+# ONDE: no seu servidor/VM (na pasta do relay)
+export PONTE_ADMIN_TOKEN=$(grep -E '^PONTE_ADMIN_TOKEN=' .env | cut -d= -f2-)
 ```
 
 **Regras do nome da lane (onde TODO agente se confunde — leia devagar):**
@@ -230,6 +248,9 @@ PONTE_TOKEN_MAQUINA_2=cole-aqui-o-valor-gerado    # só se houver 2ª máquina
   `PONTE_TOKEN_ESCRITORIO`.
 - O sufixo só aceita **A-Z, 0-9 e `_`** — variável de ambiente NÃO aceita
   hífen. Uma lane "maquina-1" nunca vai existir; a certa é `maquina_1`.
+- Teto de TAMANHO: a lane (sufixo em minúsculas) tem no máximo 32 caracteres —
+  sufixo maior é descartado EM SILÊNCIO no boot; sintoma: "lane sem token" com
+  a linha certa no `.env`.
 - Máquina nova = linha nova no `.env`. Nunca o mesmo token em duas máquinas —
   a lane É a máquina.
 - Aliases legados que ainda valem (transição do token único):
@@ -246,14 +267,20 @@ Suba o relay **já em background** (se a sessão morrer, a ponte cai):
 nohup npm run dev > relay.log 2>&1 &   # porta 3000 (ocupada? PORT=3001 npm run dev)
 ```
 
+Subiu em outra porta? Troque o `3000` em TODOS os comandos seguintes — curls
+de validação, túnel do Passo 3 e exemplos do § 4 (o `PONTE_URL` do `ponte.py`
+também aponta para `http://127.0.0.1:3000` por padrão).
+
 Valide **local**:
 
 ```bash
 # ONDE: no seu servidor/VM
-curl -s -H "x-ponte-admin: $(grep PONTE_ADMIN_TOKEN .env | cut -d= -f2)" \
+curl -s -H "x-ponte-admin: $(grep -E '^PONTE_ADMIN_TOKEN=' .env | cut -d= -f2-)" \
   http://127.0.0.1:3000/api/ponte/status
 # esperado: {"ok":true,"connected":false,"lanes":{...},"version":"..."}
-# SEM o header: 401 — o status é privado. HTML 500? Veja o cacheComponents acima.
+# SEM o header: 401 — o status é privado. 401 COM header? valor sujo
+# (comentário na linha do .env) ou .env não recarregado — reinicie o relay.
+# HTML 500? Veja o cacheComponents acima.
 ```
 
 O estado do relay persiste em `.ponte-estado.json` (fila pendente, últimos
@@ -266,20 +293,27 @@ a pasta de estado em VPS/container: `PONTE_DATA_DIR`.
 O agente precisa de uma URL pública HTTPS que chegue ao relay. Descubra NESTA
 ordem — nunca teste candidatos inventados (URL errada = 404 e tempo queimado):
 
-1. **Contexto da plataforma.** Em previews por sessão (ex.: z.ai/space-z) a
-   URL é `https://preview-chat-<CHAT_ID>.space-z.ai/` — o `CHAT_ID` vem no
-   metadata de cada mensagem da conversa. Determinístico; nada de adivinhar.
+1. **Contexto da plataforma** (SÓ vale em preview de plataforma, tipo
+   z.ai/space-z): a URL é `https://preview-chat-<CHAT_ID>.space-z.ai/` — o
+   `CHAT_ID` vem no metadata de cada mensagem da conversa. Determinístico;
+   nada de adivinhar. Em VPS ou outra plataforma, pule direto para o 2 ou 3.
 2. **Variáveis de ambiente:** `env | grep -iE 'preview|url|host|domain|bot'`.
 3. **Pergunte ao usuário** — **Diga assim:** "me cola a URL de preview que
    aparece aí no topo do navegador".
 4. **Plano B — túnel sem conta:**
 
 ```bash
-# ONDE: no seu servidor/VM
+# ONDE: no seu servidor/VM — túnel em SEGUNDO plano (primeiro plano trava o shell)
 curl -fLo cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x cloudflared && ./cloudflared tunnel --url http://localhost:3000
-# anote a https://...trycloudflare.com do log (ngrok também serve; exige conta)
+chmod +x cloudflared
+nohup ./cloudflared tunnel --url http://localhost:3000 > tunel.log 2>&1 &
+grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunel.log | head -1
+# ngrok também serve; exige conta
 ```
+
+⚠️ A URL do trycloudflare **MUDA a cada execução do túnel**: caiu, a ponte
+cai — reerga e religue o agente com `--server NOVA_URL --save` (§ 6). Por
+isso, URL de plataforma ou domínio fixo vencem o túnel sempre.
 
 Valide local E público num bloco só (mesmo JSON nos dois = roteamento OK):
 
@@ -290,8 +324,17 @@ curl -s https://URL_DA_PONTE/api/ponte/status   -H "x-ponte-admin: $PONTE_ADMIN_
 # ambas sem header → 401. Local ok + público 404 = problema de roteamento/gateway.
 ```
 
-**Só siga ao Passo 4 com o público respondendo** — senão o agente do usuário
-vai pollar para o nada.
+**Portão do Passo 3 — atravesse só com as 3 PROVAS:**
+
+1. `curl` LOCAL devolve JSON `ok:true`;
+2. `curl` PÚBLICO devolve o MESMO JSON;
+3. `curl -fsS https://URL_DA_PONTE/api/ponte/download | head -c 40` devolve
+   **JavaScript** (começa com `const`/`#!`…), NÃO um JSON de erro — JSON de
+   erro aqui = faltou copiar `agente/agent.js → download/ponte-agent/`
+   (tabela do Passo 2).
+
+Sem as três, o agente do usuário vai pollar para o nada — ou instalar um
+`agent.js` que nem é JavaScript.
 
 ### Passo 4 — Instalar o agente NA MÁQUINA do usuário
 
@@ -316,10 +359,12 @@ uma nova, aí sim cola o bloco abaixo".
 
 **O BLOCO DE ENTREGA (modelo canônico — único do arquivo).** Um bloco POR
 máquina, com URL e token JÁ preenchidos por você; o usuário só copia, cola e
-roda (não digita token, não abre página, não preenche placeholder). O bloco
-instala em modo **autônomo** (`--auto`): você executa comandos direto, com a
-trava anticatástrofe ativa — o usuário pode trocar o modo depois (§ 4.4), e a
-Lei 3 continua valendo.
+roda (não digita token, não abre página, não preenche placeholder). Antes de
+mandar, releia o bloco: TODO placeholder (`URL_DA_PONTE`, `TOKEN_DA_MAQUINA_X`)
+tem que ter virado valor real — bloco com placeholder literal instala um
+agente morto. O bloco instala em modo **autônomo** (`--auto`): você executa
+comandos direto, com a trava anticatástrofe ativa — o usuário pode trocar o
+modo depois (§ 4.4), e a Lei 3 continua valendo.
 
 **Máquina X — rode este comando NELA** (o token abaixo é SÓ dela):
 
@@ -441,8 +486,15 @@ python3 ponte.py --drain           # lê resultados pendentes
 PONTE_WAIT_S=300 python3 ponte.py ...   # espera mais (modo supervisionado)
 ```
 
-A espera padrão do `ponte.py` é 150 s (`PONTE_WAIT_S`) — cobre os 60 s da
-caixa s/N do modo supervisionado mais a execução.
+Tem Python na sua VM? **Prefira o `ponte.py` ao curl cru** — lane, baseline e
+pedaços ficam resolvidos sozinhos; curl é o fallback universal.
+
+As esperas são DIFERENTES por caminho: ações genéricas (`ping`, `list`…)
+esperam `PONTE_WAIT_S` (padrão 150 s — cobre os 60 s da caixa s/N do modo
+supervisionado mais a execução); `enviar` espera 60 s FIXOS (ignore o
+`PONTE_WAIT_S`); `pegar` espera 60 s POR PEDAÇO. E: `--drain` imprime cada
+resultado truncado em 3.000 caracteres (payload completo é no `/results`);
+`enviar` SEMPRE sobrescreve o destino (o antigo vai para a lixeira).
 
 **Conectado, mas o resultado não vem — playbook, nesta ordem:**
 
@@ -473,9 +525,9 @@ ambos os estilos conforme o SO dele.
 | `ping` | `{}` | Specs e estado: CPU, RAM, Node, usuário, máquina, modo (`modoDeus`, `godModeDeclined`), versão da skill (`skill`) |
 | `list` | `{"path":"C:\\Users\\u\\Downloads"}` | Lista pasta (nome, pasta?, bytes, mtime); pagina com `offset`/`limit` (400 por página, limite 2.000, teto de 4.000 itens por pasta) |
 | `tree` | `{"path":"...","depth":2}` | Árvore (profundidade máx. 4) |
-| `read_text` | `{"path":"...","offset":0,"maxBytes":200000,"encoding":"auto"}` | Texto de QUALQUER tamanho em pedaços (≤ 2 MB/pedaço, padrão 200 KB); detecta utf-8/cp1252/utf-16/latin1; siga `proximoOffset` até `null` |
+| `read_text` | `{"path":"...","offset":0,"maxBytes":200000,"encoding":"auto"}` | Texto de QUALQUER tamanho em pedaços (≤ 2 MB/pedaço, padrão 200 KB); detecta utf-8/windows-1252/utf-16/latin1 (o nome é por extenso — `"encoding":"cp1252"` é recusado); siga `proximoOffset` até `null` |
 | `write_text` | `{"path":"...","content":"...","overwrite":true}` | Cria/sobrescreve (≤ 1 MB; antigo → lixeira) |
-| `search` | `{"path":"...","query":"termo","mode":"name"\|"content"}` | Busca por nome (padrão 300 hits) ou conteúdo (200) — teto 500 via `max`; pula arquivos > 2 MB |
+| `search` | `{"path":"...","query":"termo","mode":"name"\|"content"}` | Busca por nome — casa no CAMINHO COMPLETO, não só no nome do arquivo — (padrão 300 hits) ou conteúdo (200) — teto 500 via `max`; pula arquivos > 2 MB, binários e vazios |
 | `mkdir` | `{"path":"..."}` | Cria pasta(s) |
 | `move` | `{"from":"...","to":"..."}` | Move/renomeia |
 | `rename` | `{"path":"...","newName":"novo.ext"}` | Renomeia no mesmo lugar |
@@ -486,7 +538,7 @@ ambos os estilos conforme o SO dele.
 | `undo_last` | `{}` | Desfaz a última operação (lixeira/lote) |
 | `free_space` | `{}` | Espaço livre/total dos discos |
 | `disk_usage` | `{"path":"...","depth":2}` | Tamanho por subpasta |
-| `duplicates` | `{"path":"...","minSizeBytes":1048576}` | Duplicados (tamanho→md5) + espaço recuperável |
+| `duplicates` | `{"path":"...","minSizeBytes":1048576}` | Duplicados (tamanho→md5) + espaço recuperável (default de `minSizeBytes`: 1024) |
 | `read_binary` | `{"path":"...","offset":0,"maxBytes":4194304}` | Binário em base64 por pedaços (≤ 6 MB/pedaço; padrão 4 MB em arquivos grandes) — junte os base64 NA ORDEM |
 | `file_info` | `{"path":"..."}` | Tipo REAL por magic bytes (png, jpeg, pdf, zip, exe, mp4, sqlite, gzip, iso…) + tamanho + encoding se for texto |
 | `write_binary` | `{"path":"...","base64":"...","overwrite":true}` | Grava binário (máx 8 MB) |
@@ -494,6 +546,12 @@ ambos os estilos conforme o SO dele.
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | Protocolo da Lei 3 |
 | `skill_update` | `{}` | Força o download da SKILL.md deste repo (também roda sozinho no boot e a cada 60 s) |
 | `task_done` | `{"resumo":"..."}` | **Fecha a tarefa** (Lei 1) — ÚLTIMO comando de toda tarefa |
+
+`search`, `tree`, `disk_usage` e `duplicates` **pulam por desenho** as pastas
+`node_modules`, `.git`, `.cache`, `cache`, `.thumbnails`, `Trash`, `.steam`,
+`.var`, `snap`, `__pycache__`, `.cargo`, `.rustup`, `.npm`, `Cache`,
+`Code Cache`: "não achou" NÃO é "não existe" — em dúvida, `list` direto na
+pasta suspeita.
 
 Resposta de cada comando: `{"id","ok","data"|"error","durationMs","ts"}`.
 
@@ -507,7 +565,8 @@ no Linux e no Windows:
 2. **Texto:** `read_text` (≤ 2 MB/pedaço, padrão 200 KB) e siga
    `proximoOffset` até `null` — cada resposta traz `encoding`, `lidos`,
    `truncado`, `caracteres`. Encoding não-utf-8? Passe `"encoding"` explícito
-   nos pedaços seguintes (a `dica` da resposta avisa).
+   nos pedaços seguintes (a `dica` da resposta avisa; o nome é por extenso:
+   `windows-1252`, não `cp1252`).
 3. **Binário:** `read_binary` (≤ 6 MB/pedaço, padrão 4 MB) com
    `{"offset": proximoOffset}` e junte os `base64` NA ORDEM — ou deixe o
    `ponte.py pegar` fazer isso sozinho. Arquivos até 6 MB vêm inteiros numa
@@ -538,6 +597,16 @@ religar o agente no terminal DELE. **Diga assim:** "Ctrl+C no terminal do
 agente e roda `node agent.js --auto --save` — isso me dá execução direta com a
 trava anticatástrofe, ok?" (no Windows, mesmo comando no PowerShell). ⚠️ Fechar
 a janela do agente me corta o acesso — avise que é normal e rápido.
+
+⚠️ **O modo fica GRAVADO em `ponte.config.json` pelo `--save`.** Depois de
+`--auto --save`, religar com `node agent.js` puro NÃO volta ao desligado — e
+`--allow-run --save` também não rebaixa (o `auto:true` persiste). Para
+rebaixar de verdade: edite o `ponte.config.json` na pasta do agente
+(`"auto": false` → supervisionado; `"run": false, "auto": false` → desligado)
+ou apague o arquivo e religue com as flags desejadas. **NUNCA tente
+`--auto=false`**: o parser lê a flag como presente e ATIVA o autônomo. E
+desligar o modo deus (`god_mode {"enabled":false}`) deixa o agente no modo
+autônomo gravado — não no supervisionado.
 
 Em modo supervisionado use `PONTE_WAIT_S=150` (ou mais) no `ponte.py`.
 **Diga assim (primeira caixa s/N):** "vai aparecer uma caixa pedindo
@@ -586,11 +655,11 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 
 | Código | Onde | Significado |
 |---|---|---|
-| 401 | tudo | token ausente/inválido (admin ou agente) |
-| 400 | `/cmd` | JSON inválido, ação ausente, lane ausente/inválida, **lane sem token** (a mensagem ensina: crie `PONTE_TOKEN_<SUFIXO>` e reinicie o relay) |
+| 401 | tudo, EXCETO `/api/ponte/download` (pública por desenho — o PC baixa o agent.js sem token) | token ausente/inválido (admin ou agente) |
+| 400 | `/cmd`, `/result`, `/results` | JSON inválido, ação/id/lane ausente ou inválida; no `/cmd`, **lane sem token** (a mensagem ensina: crie `PONTE_TOKEN_<SUFIXO>` e reinicie o relay) |
 | 403 | `/result` | resultado pertence a outra lane |
 | 404 | `/result` | resultado para comando desconhecido nesta lane |
-| 411 | `/cmd`, `/result` | requisição chunked sem content-length |
+| 411 | `/cmd` | requisição chunked sem content-length |
 | 413 | `/cmd`, `/result` | corpo acima de 12 MB |
 | 429 | `/cmd` | fila da lane cheia (100) |
 | 503 | `/cmd` | persistência falhou — o comando não foi aceito; tente de novo |
@@ -602,7 +671,7 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 | Corpo de requisição (2 sentidos) | 12 MB |
 | Pedaço de `read_text` | 2 MB por chamada (padrão 200 KB) |
 | Pedaço de `read_binary` | 6 MB por chamada (padrão 4 MB em arquivos grandes) |
-| Tamanho do ARQUIVO lido | ilimitado (pedaços com `proximoOffset`) |
+| Tamanho do ARQUIVO lido | ilimitado via `read_binary` em pedaços; o `pegar` do ponte.py desiste por segurança após 200 pedaços (≈1,2 GB) e deixa o arquivo parcial |
 | `write_text` / `write_binary` | 1 MB / 8 MB |
 | Comando (`run_command.command`) | 4.000 caracteres |
 | Timeout por `run_command` | padrão 3 min; teto 30 min (`timeoutMin`) |
@@ -618,7 +687,9 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 | Poll do agente | a cada 1,5 s |
 | Snapshot do relay | `.ponte-estado.json` (pendentes + resultados com data cortada em 200k; sobrevive a restart; `PONTE_DATA_DIR` muda a pasta) |
 | `list` | 400 itens por página (máx. 2.000) |
-| `search` | 300 hits por nome / 200 por conteúdo; pula arquivos > 2 MB |
+| `tree` / `disk_usage` / `duplicates` | teto interno: 800 entradas (teto 3.000) / top 30 pastas / 200 grupos (top 100) |
+| `free_space` | precisa de `fs.statfs` (Node ≥ 18.15; Node 18.0–18.14 falha e o erro sugere `df -h`) |
+| `search` | 300 hits por nome (casa no caminho completo) / 200 por conteúdo; pula >2 MB, binários e vazios; pula `node_modules`, `.git`, `.cache`, `Trash`, `__pycache__`… |
 | Checagem da skill pelo agente | boot + a cada 60 s (ETag: nada mudou = HTTP 304, zero bytes); falha de rede = backoff até 15 min |
 
 ## 6. Manutenção
@@ -649,16 +720,21 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 
 | Sintoma | Causa | Correção |
 |---------|-------|----------|
-| `Lane "x" sem token — crie PONTE_TOKEN_… e reinicie o relay` (400 no /cmd) | lane inexistente ou token não carregado | crie a linha no `.env` e **REINICIE o relay**; nome com `-` nunca nasce de env — use `_` |
+| `Lane "x" sem token — crie PONTE_TOKEN_… e reinicie o relay` (400 no /cmd) | lane inexistente, token não carregado, ou sufixo > 32 caracteres (descartado em silêncio) | crie a linha no `.env` e **REINICIE o relay**; nome com `-` nunca nasce de env — use `_`; encurte o sufixo |
+| 401 na validação com o `.env` aparentemente certo | comentário inline após o valor (`TOKEN=valor # nota`) suja o `cut` do header | tire o comentário da linha do valor, reexporte o token, teste de novo |
 | `Comando vazio` no `run_command` | chave errada no args | a chave é **`command`**, não `comando` |
 | `Pasta protegida no caminho` | caminho relativo resolveu contra o CWD do agente (a pasta dele é bloqueada), ou pasta sensível (`.ssh`, `.config`, …) | use **caminho absoluto** (`/home/u/...` ou `C:\Users\u\...`); pasta sensível é bloqueada mesmo absoluta — respeite |
 | `Arquivo protegido (credenciais/config do agente)` | o arquivo é config/log do próprio agente ou credencial conhecida (`.env`, `.npmrc`, …) | não é para ler mesmo; peça o que precisa ao usuário por outro caminho |
 | PowerShell: "o termo curl não é reconhecido" ou resposta HTML | `curl` sem `.exe` virou `Invoke-WebRequest` | use **`curl.exe`** (com a extensão) |
 | PowerShell: "o termo node não é reconhecido" logo após instalar o Node | PATH novo não entra em janelas já abertas | feche TODAS as janelas do PowerShell, abra uma nova e repita |
 | Agente não conecta (`conectado:false`) | URL/token errados, relay sem o token no `.env`, ou agente fechado | confira `--server`, confira `.env` + restart do relay, religue o agente |
+| `node agent.js` no PC falha com SyntaxError | o `curl -o agent.js` gravou um JSON de erro (rota `/download` 404) | copie `agente/agent.js` para `download/ponte-agent/` no relay; valide com `curl -fsS URL/api/ponte/download \| head -c 40` |
+| Local responde, público dá connection refused | relay subiu em outra porta (ex.: `PORT=3001`) e os curls/túnel apontam 3000 | alinhe a porta em TODOS os comandos (e no túnel) |
+| Ponte morreu sozinha horas depois | túnel efêmero (trycloudflare) mudou de URL ou morreu | reerga o túnel e religue o agente com `--server NOVA_URL --save` |
 | `TEMPO ESGOTADO` com agente conectado | baseline do operador maior que os ids da instância nova | apague `.ponte_since_<nome-da-lane>` na pasta do `ponte.py` (ou em `PONTE_STATE_DIR`, se definido) |
 | `TEMPO ESGOTADO` em modo supervisionado | prompt s/N + execução passaram da espera do operador | reenvie com `PONTE_WAIT_S=150+` (sem resposta na caixa, o agente auto-rejeita com erro próprio) |
 | `Você rejeitou o comando no terminal (resposta: n)` | ninguém confirmou a caixa s/N em 60 s | reenvie; **Diga assim:** "vai aparecer a caixa de novo — aperta `s` quando ela vier" |
+| Religuei com `node agent.js` e ele segue executando sozinho | modo gravado no `ponte.config.json` pelo `--save` | edite o config (`"auto": false`) ou apague-o e religue com as flags desejadas; NUNCA `--auto=false` (ativa!) |
 | `Fila de comandos cheia` (429) | agente offline/travado acumulando além de 100 | religue o agente — pendentes <24h drenam sozinhos no reconnect |
 | Agente Windows "congela" com a janela normal | QuickEdit do console: clique dentro da janela congela o stdout | rode pelo `rodar.bat` (log em arquivo + QuickEdit off); `watchdog.bat` religa sozinho |
 | Relay reiniciou e perdeu fila/histórico | relay < 1.2.0 (estado só em RAM) | atualize o `relay/` do repo: snapshot em `.ponte-estado.json` sobrevive a restart |
@@ -682,6 +758,9 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
   lixeira interna do programinha, dá para desfazer — a Lixeira do Windows não
   é usada."
 - **Log:** tudo que o agente executa fica em `ponte-log.jsonl` na pasta dele.
+- **Token sem aparecer no `ps`/histórico do shell:**
+  `PONTE_AGENT_TOKEN=… node agent.js --server URL` (a env só vale se a config
+  ainda não tem token; `--home` troca a pasta base do agente).
 - **O `.gitignore` do repo já cobre** `.env`, `.ponte-estado.json`,
   `.ponte-seq`, `ponte-log.jsonl*`, `__pycache__/` e `*.pyc`. Se você usar
   `worklog.md`, `db/` ou logs próprios no seu fork, adicione-os ANTES do
@@ -707,14 +786,18 @@ curl -s "$PONTE_URL/api/ponte/results?since=76&lane=maquina_1" \
 
 As 5 Leis, a tabela de ações e os limites valem igual. Para uso permanente
 independente de plataforma, hospede o relay num serviço com domínio fixo
-(VPS, Render, Railway, Fly.io) — o repo tem tudo em `relay/RESTAURAR.md` — e
-a URL nunca mais muda.
+(VPS, Render, Railway, Fly.io) e a URL nunca mais muda. O `RESTAURAR.md`
+cobre a RECONSTRUÇÃO no preview (a VM reseta e perde tudo); em VPS o desenho é
+o mesmo — Node 18+, `.env` com os `PONTE_TOKEN_*`, `PONTE_DATA_DIR` para o
+estado, HTTPS/domínio por conta do serviço — e as validações do Passo 3 valem
+iguais.
 
 ## Apêndice B — O que o usuário vê no terminal
 
 No boot, arte **PONTE AGENTE** em blocos (terminal Linux UTF-8 e
 cmd/PowerShell do Windows 10+ com fonte Consolas; janela estreita (<65
-colunas), console antigo ou log de app → banner ASCII). Toda ação em
+colunas) ou console antigo → banner ASCII — no Windows também com log de app;
+no Linux com saída redirecionada o banner Unicode é mantido). Toda ação em
 andamento mostra um spinner `⠏ rodando: <rótulo> (Ns)` (ASCII `|/-\` no cmd).
 Ao fim de cada `run_command`, uma caixa `output` com stdout, stderr e código
 de saída (truncada em 60/30 linhas — a IA continua recebendo o JSON completo;
