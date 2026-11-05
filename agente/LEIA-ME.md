@@ -59,8 +59,8 @@ do Windows que congelava o agente.
 
 ## Uma ponte, várias máquinas — cada uma com seu token
 
-Se mais de um computador seu conecta na mesma ponte (ex.: um netbook Linux e
-um PC Windows), **cada máquina recebe o SEU token** — a IA entrega um
+Se mais de um computador seu conecta na mesma ponte (ex.: um notebook Linux e
+um PC com Windows), **cada máquina recebe o SEU token** — a IA entrega um
 diferente no chat privado na instalação de cada uma. O token define a "lane"
 do relay: a fila de comandos da sua máquina é independente da fila das
 outras, e um comando destinado a uma máquina **nunca executa na outra**.

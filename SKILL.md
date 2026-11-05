@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.8.0 -->
+<!-- skill-version: 3.8.1 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -190,7 +190,7 @@ cd ponte-relay
 # o SUFIXO da variável cria a lane com esse nome (relay 1.5.0, lanes dinâmicas):
 export PONTE_TOKEN_MAQUINA_1=$(openssl rand -hex 12)  # agente da máquina 1 (entregue no chat privado)
 export PONTE_TOKEN_MAQUINA_2=$(openssl rand -hex 16)  # agente da máquina 2, se houver
-export PONTE_TOKEN_CELULAR=$(openssl rand -hex 12)    # opcional: lane do celular (Termux)
+export PONTE_TOKEN_TELEFONE=$(openssl rand -hex 12)   # opcional: lane do telefone (Termux)
 export PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)      # só você usa
 # aliases legados ainda valem: PONTE_AGENT_TOKEN (= lane netbook) e PONTE_TEST_TOKEN (= lane test)
 npm run dev                                        # porta 3000
@@ -360,7 +360,7 @@ cobre Windows: bloqueia `format`, `diskpart`, `cipher /w`, `vssadmin delete
 shadows` e `rd /s`/`del /s`/`Remove-Item -Recurse` apontando para raiz de
 drive, `C:\Windows`, `C:\Program Files` ou `$HOME`.
 
-### Termux (Android) — lane de celular (agente v1.10.1+)
+### Termux (Android) — lane do telefone (agente v1.10.1+)
 
 O agente roda no Termux como qualquer máquina da ponte: lane própria, token
 próprio, fila independente. O `run_command` resolve o bash sozinho
@@ -427,8 +427,8 @@ o poll segue normal pelo cursor.
 ## Fase 4 — Operar (referência das ações)
 
 Envie comandos por `POST /api/ponte/cmd` com header `x-ponte-admin: ADMIN_TOKEN`,
-corpo `{"lane":"netbook","action":"...","args":{...}}` (a lane é a máquina alvo;
-sem lane o relay 1.3.x usa `netbook` e logo passa a exigir) — ou via `ponte.py`:
+corpo `{"lane":"maquina-1","action":"...","args":{...}}` (a lane é a máquina alvo;
+obrigatória desde o relay 1.5.0) — ou via `ponte.py`:
 
 ```bash
 python3 ponte.py <ação> '<args-json>'
