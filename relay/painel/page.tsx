@@ -6,7 +6,11 @@ import { useEffect, useState } from "react";
 // Sem o token de operador, NENHUMA informação da ponte é exibida (nem a
 // existência das máquinas). O token fica só no localStorage deste navegador.
 // O seletor de visão permite mostrar uma máquina só — nada de juntar
-// netbook com windows na tela de quem só quer ver uma.
+// máquinas na tela de quem só quer ver uma.
+//
+// v1.5.0: o seletor de lanes é DINÂMICO — as lanes vêm do /status (elas
+// nascem do .env do relay). Nada de lista fixa no código: máquina nova ou
+// lane renomeada aparece sozinha, sem editar o painel.
 
 interface AgentInfo {
   agente?: string;
@@ -26,6 +30,7 @@ interface LaneStatus {
   lastSeenAgoS: number | null;
   agentInfo: AgentInfo | null;
   pending: number;
+  semToken?: boolean;
 }
 
 interface Status {
@@ -37,20 +42,15 @@ interface Status {
 const TOKEN_KEY = "ponte-admin-token";
 const VIEW_KEY = "ponte-view";
 
-type Visao = "todas" | "netbook" | "windows" | "test" | "celular";
-
-const MAQUINAS: Array<{ lane: "netbook" | "windows" | "test" | "celular"; nome: string }> = [
-  { lane: "netbook", nome: "Netbook" },
-  { lane: "windows", nome: "Windows" },
-  { lane: "test", nome: "Teste" },
-  { lane: "celular", nome: "Celular" },
-];
+function nomeBonito(lane: string): string {
+  return lane.charAt(0).toUpperCase() + lane.slice(1);
+}
 
 function fmtGB(n?: number): string {
   return n == null ? "—" : n.toFixed(1).replace(".", ",") + " GB";
 }
 
-function CartaoMaquina({ nome, lane, st }: { nome: string; lane: string; st: LaneStatus | undefined }) {
+function CartaoMaquina({ lane, st }: { lane: string; st: LaneStatus | undefined }) {
   const a = st?.agentInfo ?? null;
   const conectado = st?.conectado === true;
 
@@ -70,8 +70,13 @@ function CartaoMaquina({ nome, lane, st }: { nome: string; lane: string; st: Lan
   return (
     <div className="w-full rounded-xl border border-zinc-800 bg-zinc-900 p-5 font-mono text-sm text-zinc-300">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-100">{nome}</h2>
+        <h2 className="text-sm font-semibold text-zinc-100">{nomeBonito(lane)}</h2>
         <div className="flex items-center gap-2">
+          {st?.semToken && (
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500">
+              sem token
+            </span>
+          )}
           {st != null && st.pending > 0 && (
             <span className="rounded bg-amber-950 px-1.5 py-0.5 text-[10px] text-amber-400">
               {st.pending} pendente{st.pending > 1 ? "s" : ""}
@@ -160,13 +165,13 @@ export default function Home() {
   const [token, setToken] = useState<string | null>(null);
   const [recusado, setRecusado] = useState(false);
   const [st, setSt] = useState<Status | null>(null);
-  const [visao, setVisao] = useState<Visao>("todas");
+  const [visao, setVisao] = useState<string>("todas");
 
   useEffect(() => {
     const t = localStorage.getItem(TOKEN_KEY);
     if (t) setToken(t);
     const v = localStorage.getItem(VIEW_KEY);
-    if (v === "netbook" || v === "windows" || v === "test" || v === "celular" || v === "todas") setVisao(v);
+    if (v) setVisao(v);
   }, []);
 
   useEffect(() => {
@@ -212,7 +217,11 @@ export default function Home() {
     );
   }
 
-  const visiveis = visao === "todas" ? MAQUINAS : MAQUINAS.filter((m) => m.lane === visao);
+  // Lanes vêm do relay (v1.5.0) — o seletor acompanha o .env sozinho.
+  // Visão salva no localStorage que não existe mais cai para "todas".
+  const nomesLanes = st ? Object.keys(st.lanes).sort() : [];
+  const visaoValida = visao === "todas" || nomesLanes.includes(visao) ? visao : "todas";
+  const visiveis = visaoValida === "todas" ? nomesLanes : [visaoValida];
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-zinc-950 p-6">
@@ -222,18 +231,18 @@ export default function Home() {
           <div className="flex items-center gap-2 font-mono text-xs">
             <select
               className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-zinc-300 outline-none"
-              value={visao}
+              value={visaoValida}
               onChange={(e) => {
-                const v = e.target.value as Visao;
-                setVisao(v);
-                localStorage.setItem(VIEW_KEY, v);
+                setVisao(e.target.value);
+                localStorage.setItem(VIEW_KEY, e.target.value);
               }}
             >
               <option value="todas">ver: todas</option>
-              <option value="netbook">ver: só netbook</option>
-              <option value="windows">ver: só windows</option>
-              <option value="test">ver: só teste</option>
-              <option value="celular">ver: só celular</option>
+              {nomesLanes.map((lane) => (
+                <option key={lane} value={lane}>
+                  ver: só {lane}
+                </option>
+              ))}
             </select>
             <button
               className="rounded-lg border border-zinc-700 px-2 py-1.5 text-zinc-500 hover:text-zinc-200"
@@ -248,8 +257,8 @@ export default function Home() {
           </div>
         </div>
         <div className="flex flex-col gap-4 sm:flex-row">
-          {visiveis.map(({ lane, nome }) => (
-            <CartaoMaquina key={lane} nome={nome} lane={lane} st={st?.lanes?.[lane]} />
+          {visiveis.map((lane) => (
+            <CartaoMaquina key={lane} lane={lane} st={st?.lanes?.[lane]} />
           ))}
         </div>
       </div>

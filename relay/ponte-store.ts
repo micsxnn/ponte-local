@@ -4,13 +4,25 @@
 // apenas JSON de metadados/operações.
 //
 // Lanes (v1.3.0) — uma lane por máquina, fim do token único:
-// - Cada agente autentica com SEU token; o token determina a lane
-//   ("netbook", "windows", "test"). Fila, lastSeen e specs são POR LANE:
-//   comando de uma máquina nunca atravessa para a outra.
-// - Tokens vêm de variáveis de ambiente (NADA hardcoded — o repo público
-//   não pode carregar segredo): PONTE_TOKEN_NETBOOK, PONTE_TOKEN_WINDOWS,
-//   PONTE_TOKEN_TEST, PONTE_ADMIN_TOKEN. Aliases legados aceitos:
-//   PONTE_AGENT_TOKEN (= netbook) e PONTE_TEST_TOKEN (= test).
+// - Cada agente autentica com SEU token; o token determina a lane.
+//   Fila, lastSeen e specs são POR LANE: comando de uma máquina nunca
+//   atravessa para a outra.
+//
+// Lanes DINÂMICAS (v1.5.0) — fim da lista fixa no código:
+// - A lane nasce da variável de ambiente: PONTE_TOKEN_<NOME> cria a lane
+//   "nome" (sufixo em minúsculas). Máquina nova = linha nova no .env, sem
+//   editar fonte. Nomes pessoais deixaram de estar hardcoded no projeto
+//   público — exemplos de documentação viram "maquina-1", "pc" etc.
+// - Aliases legados mantidos: PONTE_AGENT_TOKEN (= netbook) e
+//   PONTE_TEST_TOKEN (= test) — transição da era do token único.
+// - Lanes antigas que sumiram do .env não perdem o histórico: o snapshot
+//   as preserva e /status as mostra marcadas com semToken:true.
+//
+// Tokens (v1.4.0, mantido): SEMPRE via ambiente, NUNCA no repo. Uma lane
+// aceita uma LISTA de tokens separados por vírgula (transição de migração:
+// token velho e novo convivem até a máquina trocar; aí o velho sai). O token
+// de cada máquina é entregue ao usuário no chat privado; o ADMIN é usado
+// apenas pelo operador (dentro da VM ou IA autorizada).
 //
 // Resiliência (v1.2.0, mantida):
 // - Estado sobrevive a restart do processo: snapshot em .ponte-estado.json
@@ -26,8 +38,9 @@ import fs from "fs";
 import path from "path";
 import { createHash, timingSafeEqual } from "crypto";
 
-export type LaneId = "netbook" | "windows" | "test" | "celular";
-export const LANE_IDS: LaneId[] = ["netbook", "windows", "test", "celular"];
+// Lane = nome curto dado pelo usuário (v1.5.0): a-z0-9, depois pode ter - e _.
+export type LaneId = string;
+export const LANE_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export interface PonteCommand {
   id: number;
@@ -58,7 +71,7 @@ interface PonteState {
   results: PonteResult[]; // histórico (capado)
   respondidos: number[]; // ids com resultado confirmado — sobrevive à poda dos 400 resultados
   claimed: Map<number, number>; // id do comando → timestamp do claim (entrega exclusiva)
-  lanes: Record<LaneId, LaneState>;
+  lanes: Record<string, LaneState>;
   startedAt: number;
   totalCommands: number;
   totalResults: number;
@@ -77,11 +90,6 @@ const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000; // pendente com mais de 24h morr
 const CLAIM_LEASE_MS = 120_000; // se o agente não responder em 2 min, libera de novo
 const SNAPSHOT_EVERY_MS = 4000; // debounce das escritas não críticas
 
-// Tokens fixos desta instância da ponte — SEMPRE via ambiente, NUNCA no repo.
-// Uma lane aceita uma LISTA de tokens separados por vírgula (transição de
-// migração: token velho e novo convivem até a máquina trocar; aí o velho sai).
-// O token de cada máquina é entregue ao usuário no chat privado; o ADMIN
-// é usado apenas pelo operador (dentro da VM ou IA autorizada).
 function tokensEnv(...nomes: string[]): string[] {
   for (const n of nomes) {
     const v = process.env[n];
@@ -92,15 +100,46 @@ function tokensEnv(...nomes: string[]): string[] {
   return [];
 }
 
-export const LANE_TOKENS: Record<LaneId, string[]> = {
-  netbook: tokensEnv("PONTE_TOKEN_NETBOOK", "PONTE_AGENT_TOKEN"),
-  windows: tokensEnv("PONTE_TOKEN_WINDOWS"),
-  test: tokensEnv("PONTE_TOKEN_TEST", "PONTE_TEST_TOKEN"),
-  celular: tokensEnv("PONTE_TOKEN_CELULAR"),
-};
+// Varre PONTE_TOKEN_<SUFIXO>: o sufixo em minúsculas vira o nome da lane
+// (v1.5.0). "PONTE_TOKEN_PC" cria a lane "pc"; "PONTE_TOKEN_MAQUINA_2" cria
+// "maquina_2". Antes a lista era fixa no código — máquina nova exigia editar
+// fonte, e o repo público carregava nomes pessoais (netbook, celular...).
+function lanesFromEnv(): Record<string, string[]> {
+  const lanes: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    const m = /^PONTE_TOKEN_([A-Za-z0-9_]+)$/.exec(k);
+    if (!m || typeof v !== "string") continue;
+    const lane = m[1].toLowerCase();
+    if (!LANE_RE.test(lane)) continue;
+    const lista = v.split(",").map((t) => t.trim()).filter(Boolean);
+    if (lista.length) lanes[lane] = lista;
+  }
+  // Aliases legados (token único da era 1.x) — só valem se a lane explícita não existe
+  if (!lanes.netbook) {
+    const t = tokensEnv("PONTE_AGENT_TOKEN");
+    if (t.length) lanes.netbook = t;
+  }
+  if (!lanes.test) {
+    const t = tokensEnv("PONTE_TEST_TOKEN");
+    if (t.length) lanes.test = t;
+  }
+  return lanes;
+}
+
+export const LANE_TOKENS: Record<string, string[]> = lanesFromEnv();
+export const LANE_IDS: string[] = Object.keys(LANE_TOKENS).sort();
+
+export function laneTemToken(lane: string): boolean {
+  return (LANE_TOKENS[lane] ?? []).length > 0;
+}
+
+export function lanesComToken(): string[] {
+  return LANE_IDS.filter(laneTemToken);
+}
+
 export const ADMIN_TOKEN = tokensEnv("PONTE_ADMIN_TOKEN")[0] ?? "";
 
-export const PONTE_VERSION = "1.4.0";
+export const PONTE_VERSION = "1.5.0";
 export const CONNECTED_WINDOW_MS = 45_000;
 
 // Arquivos de estado ao lado do projeto (funciona em qualquer deploy):
@@ -147,18 +186,22 @@ interface Snapshot {
   commands: PonteCommand[]; // só pendentes <24h — o resto é histórico morto
   results: PonteResult[];
   respondidos: number[]; // ids JÁ respondidos (sobrevive à poda do histórico)
-  lanes: Record<LaneId, LaneState>;
+  lanes: Record<string, LaneState>;
   totalCommands: number;
   totalResults: number;
 }
 
-function lanesPadrao(): Record<LaneId, LaneState> {
-  return {
-    netbook: { lastSeen: 0, agentInfo: null },
-    windows: { lastSeen: 0, agentInfo: null },
-    test: { lastSeen: 0, agentInfo: null },
-    celular: { lastSeen: 0, agentInfo: null },
-  };
+function lanesPadrao(): Record<string, LaneState> {
+  const lanes: Record<string, LaneState> = {};
+  for (const id of LANE_IDS) lanes[id] = { lastSeen: 0, agentInfo: null };
+  return lanes;
+}
+
+// lane vinda de arquivo/legado: garante nome sanitizado (defesa contra
+// snapshot corrompido ou key estranha no JSON)
+function laneSanitaria(x: unknown): LaneId {
+  const s = String(x ?? "");
+  return LANE_RE.test(s) ? s : "netbook";
 }
 
 // channel (v1.x) → lane: "prod" era a lane única de produção = netbook.
@@ -180,7 +223,7 @@ function loadSnapshot(): Snapshot | null {
         action: String(c.action ?? ""),
         args: (c.args as Record<string, unknown>) ?? {},
         ts: (c.ts as number) ?? 0,
-        lane: verso >= 2 ? ((c.lane as LaneId) ?? "netbook") : laneLegada(c.channel),
+        lane: verso >= 2 ? laneSanitaria(c.lane) : laneLegada(c.channel),
       }));
     const results = (raw.results as Record<string, unknown>[])
       .filter((r) => r && typeof r.id === "number")
@@ -192,22 +235,23 @@ function loadSnapshot(): Snapshot | null {
         error: r.error as string | undefined,
         durationMs: r.durationMs as number | undefined,
         ts: (r.ts as number) ?? 0,
-        lane: verso >= 2 ? ((r.lane as LaneId) ?? "netbook") : laneLegada(r.channel),
+        lane: verso >= 2 ? laneSanitaria(r.lane) : laneLegada(r.channel),
       }));
 
     let lanes = lanesPadrao();
     if (verso >= 2 && raw.lanes && typeof raw.lanes === "object") {
       const l = raw.lanes as Record<string, LaneState>;
-      for (const id of LANE_IDS) {
-        if (l[id] && typeof l[id] === "object") {
-          lanes[id] = {
-            lastSeen: typeof l[id].lastSeen === "number" ? l[id].lastSeen : 0,
-            agentInfo:
-              l[id].agentInfo && typeof l[id].agentInfo === "object"
-                ? (l[id].agentInfo as Record<string, unknown>)
-                : null,
-          };
-        }
+      // Qualquer lane já vista entra (v1.5.0): máquina renomeada ou com token
+      // removido não perde histórico — /status a mostra com semToken:true.
+      for (const [id, st] of Object.entries(l)) {
+        if (!LANE_RE.test(id) || !st || typeof st !== "object") continue;
+        lanes[id] = {
+          lastSeen: typeof st.lastSeen === "number" ? st.lastSeen : 0,
+          agentInfo:
+            st.agentInfo && typeof st.agentInfo === "object"
+              ? (st.agentInfo as Record<string, unknown>)
+              : null,
+        };
       }
     } else {
       // v1 → v2: slot único virava lane netbook
@@ -311,8 +355,7 @@ export function ponte(): PonteState {
   if (!Array.isArray(s.commands)) s.commands = [];
   if (!Array.isArray(s.results)) s.results = [];
   if (!Array.isArray(s.respondidos)) s.respondidos = [];
-  if (!s.lanes)
-    s.lanes = lanesPadrao();
+  if (!s.lanes) s.lanes = lanesPadrao();
   else for (const id of LANE_IDS) if (!s.lanes[id]) s.lanes[id] = { lastSeen: 0, agentInfo: null };
   return s;
 }
@@ -346,8 +389,11 @@ function temResultado(s: PonteState, id: number): boolean {
 export function addCommand(
   action: string,
   args?: Record<string, unknown>,
-  lane: LaneId = "netbook"
+  lane?: LaneId
 ): PonteCommand {
+  if (!lane || !LANE_RE.test(lane)) {
+    throw new Error("Lane ausente ou inválida");
+  }
   const s = ponte();
   podarCommands(s);
   const pending = s.commands.filter((c) => c.lane === lane && !temResultado(s, c.id));
@@ -439,18 +485,27 @@ export function resultsSince(since: number, lane?: LaneId): PonteResult[] {
     .slice(0, 100);
 }
 
+function garanteLane(s: PonteState, lane: LaneId): void {
+  if (!s.lanes[lane]) s.lanes[lane] = { lastSeen: 0, agentInfo: null };
+}
+
 export function markSeen(lane: LaneId): void {
-  ponte().lanes[lane].lastSeen = Date.now();
+  const s = ponte();
+  garanteLane(s, lane); // lane pode ter sido criada agora (token novo sem restart de rota)
+  s.lanes[lane].lastSeen = Date.now();
   markDirty(); // lastSeen/agentInfo vão para o snapshot no debounce (4 s)
 }
 
 export function setAgentInfo(lane: LaneId, info: Record<string, unknown>): void {
-  ponte().lanes[lane].agentInfo = info;
+  const s = ponte();
+  garanteLane(s, lane);
+  s.lanes[lane].agentInfo = info;
   markDirty();
 }
 
 export function isConnected(lane: LaneId): boolean {
-  return Date.now() - ponte().lanes[lane].lastSeen < CONNECTED_WINDOW_MS;
+  const ls = ponte().lanes[lane];
+  return !!ls && Date.now() - ls.lastSeen < CONNECTED_WINDOW_MS;
 }
 
 export function pendentesDaLane(s: PonteState, lane: LaneId): number {

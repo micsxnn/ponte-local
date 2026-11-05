@@ -1,16 +1,19 @@
 import { NextRequest } from "next/server";
-import { addCommand, isAdminAuthorized, LANE_IDS, LaneId } from "@/lib/ponte-store";
+import { addCommand, isAdminAuthorized, laneTemToken, lanesComToken, LANE_RE } from "@/lib/ponte-store";
 
 const MAX_BODY = 12_000_000; // 12 MB (comandos podem carregar base64 p/ write_binary)
 
 export const dynamic = "force-dynamic";
 
 // POST /api/ponte/cmd  (somente admin — header x-ponte-admin)
-// Corpo: { lane: "netbook"|"windows"|"test", action: string, args?: object }
+// Corpo: { lane: string, action: string, args?: object }
 // A lane diz A QUAL MÁQUINA o comando se destina — filas são independentes.
-// Transição (relay 1.3.x): sem lane o comando cai em "netbook" (comportamento
-// antigo, token único) e a resposta ecoa a lane usada. Depois da migração do
-// Windows para o token próprio, a lane passa a ser OBRIGATÓRIA.
+//
+// v1.5.0: lane OBRIGATÓRIA (a transição do token único acabou — sem lane
+// gerava comando órfão na "netbook" por padrão implícito) e nome LIVRE:
+// qualquer lane com token registrado vale (a lane nasce de PONTE_TOKEN_<NOME>).
+// Enfileirar para lane SEM token é recusado — comando sem destinatário só
+// envelhece 24h e morre na fila.
 export async function POST(req: NextRequest) {
   const token = req.headers.get("x-ponte-admin");
   if (!isAdminAuthorized(token)) {
@@ -43,19 +46,33 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  let lane: LaneId = "netbook";
-  if (body.lane != null && body.lane !== "") {
-    if (!LANE_IDS.includes(body.lane as LaneId)) {
-      return Response.json(
-        { ok: false, error: `Lane inválida "${body.lane}" — use netbook|windows|test` },
-        { status: 400 }
-      );
-    }
-    lane = body.lane as LaneId;
+  if (!body.lane || typeof body.lane !== "string") {
+    return Response.json(
+      {
+        ok: false,
+        error: `Lane obrigatória — informe a máquina no corpo: "lane":"<nome>". Lanes com token: ${lanesComToken().join(", ") || "(nenhuma — crie PONTE_TOKEN_<NOME> no .env)"}`,
+      },
+      { status: 400 }
+    );
+  }
+  if (!LANE_RE.test(body.lane)) {
+    return Response.json(
+      { ok: false, error: `Lane inválida "${body.lane}" — use a-z, 0-9, "-" e "_" (começando com letra ou número)` },
+      { status: 400 }
+    );
+  }
+  if (!laneTemToken(body.lane)) {
+    return Response.json(
+      {
+        ok: false,
+        error: `Lane "${body.lane}" sem token registrado — crie PONTE_TOKEN_${body.lane.toUpperCase()} no .env do relay e reinicie. Lanes com token: ${lanesComToken().join(", ") || "(nenhuma)"}`,
+      },
+      { status: 400 }
+    );
   }
   try {
-    const cmd = addCommand(body.action, body.args, lane);
-    return Response.json({ ok: true, id: cmd.id, lane });
+    const cmd = addCommand(body.action, body.args, body.lane);
+    return Response.json({ ok: true, id: cmd.id, lane: cmd.lane });
   } catch (e) {
     return Response.json(
       { ok: false, error: e instanceof Error ? e.message : "Erro ao enfileirar" },

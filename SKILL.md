@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.7.0 -->
+<!-- skill-version: 3.8.0 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -26,8 +26,10 @@ O agente faz **poll** a cada 1,5 s, executa e devolve o resultado. Ele só abre
 conexões de **saída** — nada de portas abertas, firewall, port forwarding ou VPN.
 O relay tem uma **lane por máquina** (v1.3.0): cada agente autentica com o token
 da SUA máquina e as filas são independentes — comando destinado a uma máquina
-nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
-`PONTE_TOKEN_WINDOWS`), um por máquina, entregues no chat privado.
+nunca executa na outra. A lane é criada pela variável de ambiente
+`PONTE_TOKEN_<NOME>` (v1.5.0: o sufixo vira o nome da lane — `PONTE_TOKEN_PC`
+cria a lane `pc`; quantas máquinas quiser, sem editar código). Um token por
+máquina, entregues no chat privado.
 
 ```
 ┌──────────────┐   poll (1,5s)    ┌─────────────────────┐   admin    ┌──────────┐
@@ -48,7 +50,8 @@ nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
    fecha sozinho após ~3 min de silêncio, MESMO sem comando novo chegar —
    mas isso é para-NUNCA-ficar-sem-relatório, não licença para esquecer.)
 2. **Todo comando vai na lane da máquina certa:**
-   `"lane":"netbook"|"windows"|"test"|"celular"` — fila é por máquina.
+   `"lane":"<nome>"` — a fila é por máquina. Não invente nome: o `/status`
+   mostra as lanes que existem no relay (cada uma nasce de `PONTE_TOKEN_<NOME>`).
 3. **modo deus se pergunta no CHAT** (ping → pergunta aqui na conversa →
    `god_mode {"enabled":true}`) — nunca nada digitado no terminal do usuário.
 4. **A trava anticatástrofe é intransponível** — nunca contorne, nem com
@@ -97,7 +100,7 @@ nunca executa na outra. Tokens via ambiente do relay (`PONTE_TOKEN_NETBOOK`,
    `modoDeus` já vier `true`, apenas informe que o modo deus segue ativo.
 9. **Relatório é OBRIGATÓRIO — e o agente garante isso sozinho.** Quando o trabalho termina, envie `{"action":"task_done","args":{"resumo":"O QUE foi feito, em 1-4 linhas, linguagem simples para o usuário"}}` como ÚLTIMO comando: o relatório abre na tela dele mostrando esse resumo (NÃO mostra a lista de comandos — seção chama "O QUE FOI FEITO"). Se vier `abriuRelatorio:false`, não houve comandos de trabalho; siga. E se você ESQUECER o `task_done`, nada se perde: o agente fecha a tarefa sozinho — a pausa longa entre comandos é vigiada pelo próprio loop dele a cada 1,5 s (padrão 3 min; desde a v1.10.5 o relatório abre MESMO sem comando novo chegar, e no encerramento também) — e abre o relatório do mesmo jeito, com resumo factual das operações. O relatório é inegociável; o seu `task_done` continua sendo o caminho bom, porque é ele que coloca a SUA descrição no lugar do resumo automático. Quando a PRÓXIMA tarefa começa, o agente sozinho fecha a janela do relatório anterior e apaga o txt.
 10. **Comando enfileirado não se perde mais — e não reenvie às cegas.** O relay entrega os pendentes com menos de 24h no reconnect (poll sem cursor) e persiste o estado em `.ponte-estado.json`: queda de rede, agente reiniciado ou Next reiniciado não gera mais comandos órfãos. Antes de reenviar um comando sem resposta, confira `results`/`pending` no `/status` — reenvio duplicado é execução dupla.
-11. **Mande o comando para a lane certa.** `POST /cmd` aceita `"lane":"netbook"|"windows"|"test"|"celular"` — a fila é POR MÁQUINA. Sem lane, o relay 1.3.x usa `netbook` (transição do token único antigo) e logo passa a REJEITAR — informe sempre. Não sabe qual máquina está em cada lane? `/status` mostra (`lanes.<lane>.agentInfo.maquina`). Máquina nova na ponte = token novo para ela (Fase 2) = lane própria nasce junto.
+11. **Mande o comando para a lane certa.** `POST /cmd` EXIGE `"lane":"<nome>"` (desde o relay 1.5.0 — sem lane ele REJEITA; o nome é você que diz, a fila é POR MÁQUINA). O nome da lane é livre, mas tem que existir: `/status` mostra as lanes do relay (`lanes.<lane>.agentInfo.maquina` diz qual máquina está em cada uma). Máquina nova na ponte = linha nova `PONTE_TOKEN_<NOME>` no `.env` do relay (Fase 2) = lane própria nasce junto; lane sem token recusa comando com erro que já ensina a criar.
 12. **Atualização da skill: desinstalação TOTAL antes de instalar.** Ao instalar QUALQUER versão nova da skill Ponte Local, você PRIMEIRO desinstala por completo a versão atual — apague a pasta inteira da skill (o `SKILL.md` e TODO arquivo auxiliar que exista lá) e só DEPOIS instale a versão nova do zero, direto deste repo. Nunca sobrescreva por cima, nunca deixe arquivo antigo "só por precaução": sobra de versão anterior mistura instruções contraditórias e produz comportamento errado no PC do usuário. Conferência final obrigatória: a pasta da skill deve conter EXATAMENTE os arquivos da versão nova — nada a mais, nada a menos — e o marcador `skill-version` no topo deve ser a versão que você acabou de instalar.
 
 ## A ponte já existe? Opere sem hospedar (Claude, Manus, qualquer IA)
@@ -119,11 +122,11 @@ export PONTE_ADMIN_TOKEN=o-token-de-admin
 # o PC está conectado? (rota PRIVADA do operador — sempre com o header de admin)
 curl -s $PONTE_URL/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"
 
-# enfileira um comando — diga A QUAL MÁQUINA (lane);
-# resposta: {"ok":true,"id":77,"lane":"netbook"}
+# enfileira um comando — diga A QUAL MÁQUINA (lane, veja no /status);
+# resposta: {"ok":true,"id":77,"lane":"maquina-1"}
 curl -s -X POST $PONTE_URL/api/ponte/cmd \
   -H "x-ponte-admin: $PONTE_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"lane":"netbook","action":"ping","args":{}}'
+  -d '{"lane":"maquina-1","action":"ping","args":{}}'
 
 # alguns segundos depois (o agente polla a cada 1,5 s), leia desde id-1
 curl -s "$PONTE_URL/api/ponte/results?since=76" \
@@ -131,8 +134,8 @@ curl -s "$PONTE_URL/api/ponte/results?since=76" \
 ```
 
 3. `results?since=X` devolve `{"ok":true,"results":[...],"lastId":M}` — o
-   `lastId` é o seu próximo cursor `since`; com `&lane=netbook` (ou `windows`)
-   filtra a máquina; sem `lane`, devolve todas. Resultado vazio: ou o agente ainda
+   `lastId` é o seu próximo cursor `since`; com `&lane=<nome>` filtra a máquina
+   (nomes no `/status`); sem `lane`, devolve todas. Resultado vazio: ou o agente ainda
    não pollou (releia em 3–5 s) ou está offline (`status` mostra
    `connected:false` — peça ao usuário para religar o agente). Ponte com mais de uma máquina? Confira
    no `/status` qual lane está `conectado:true` antes de mirar.
@@ -184,11 +187,12 @@ No **servidor onde VOCÊ roda** (VM, container, seu próprio servidor):
 CI=1 npx create-next-app@latest ponte-relay --typescript --app --no-eslint --src-dir --import-alias "@/*"
 cd ponte-relay
 # copie os arquivos do repo (tabela abaixo), depois:
-export PONTE_TOKEN_NETBOOK=$(openssl rand -hex 12)  # agente da máquina 1 (entregue no chat privado)
-export PONTE_TOKEN_WINDOWS=$(openssl rand -hex 16)  # agente da máquina 2, se houver
-export PONTE_TOKEN_TEST=$(openssl rand -hex 12)     # opcional: agentes de teste na VM
-export PONTE_TOKEN_CELULAR=$(openssl rand -hex 12)  # opcional: lane do celular (Termux)
-export PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)    # só você usa
+# o SUFIXO da variável cria a lane com esse nome (relay 1.5.0, lanes dinâmicas):
+export PONTE_TOKEN_MAQUINA_1=$(openssl rand -hex 12)  # agente da máquina 1 (entregue no chat privado)
+export PONTE_TOKEN_MAQUINA_2=$(openssl rand -hex 16)  # agente da máquina 2, se houver
+export PONTE_TOKEN_CELULAR=$(openssl rand -hex 12)    # opcional: lane do celular (Termux)
+export PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)      # só você usa
+# aliases legados ainda valem: PONTE_AGENT_TOKEN (= lane netbook) e PONTE_TEST_TOKEN (= lane test)
 npm run dev                                        # porta 3000
 ```
 
@@ -298,7 +302,7 @@ respondendo** — senão o agente do usuário vai pollar para o nada.
 ## Entrega da configuração — URL e token junto com os comandos
 
 A configuração inteira do agente são dois valores: a URL pública validada
-acima e o token DA MÁQUINA (`PONTE_TOKEN_NETBOOK` ou `PONTE_TOKEN_WINDOWS` —
+acima e o token DA MÁQUINA (`PONTE_TOKEN_<NOME>` — o sufixo define a lane;
 uma lane por máquina; instale cada máquina com o token dela, nunca o mesmo
 para as duas). **Não existe etapa de configurar por interface**:
 é você quem os embute no bloco de comandos da Fase 2 e entrega pronto ao
@@ -410,7 +414,7 @@ e imprime o JSON. Configure antes:
 ```bash
 export PONTE_URL=https://SEU-RELAY
 export PONTE_ADMIN_TOKEN=<o mesmo do relay>
-export PONTE_LANE=netbook   # a máquina alvo (netbook|windows|test)
+export PONTE_LANE=maquina-1 # a máquina alvo — o NOME da lane (veja as lanes no /status)
 ```
 
 Detalhe: o primeiro poll do agente (reconexão) **não pula mais a fila**: o
@@ -614,7 +618,7 @@ sudo -S bash -c 'echo "usuario ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-nopa
 | `Fila de comandos cheia` | agente offline/travado acumulando além de 100 | verifique `--status`; religue o agente — pendentes <24h drenam sozinhos no reconnect |
 | Agente Windows "congela" com a janela parecendo normal | QuickEdit do console: um clique dentro da janela congela o stdout do node | rode pelo `rodar.bat` (log em arquivo + QuickEdit off); opcional: `watchdog.bat` religa sozinho |
 | Relay reiniciou e perdeu fila/histórico | relay < v1.2.0 (estado só em RAM) | atualize `relay/` do repo: snapshot em `.ponte-estado.json` sobrevive a restart |
-| `Lane inválida "x"` (400 no /cmd) | lane fora da lista ou digitada errada | use `netbook`, `windows` ou `test`; o `/status` mostra as lanes e qual máquina está em cada uma |
+| `Lane obrigatória` / `Lane inválida` / `sem token registrado` (400 no /cmd) | lane ausente, nome malformado ou lane que não existe no relay | informe `"lane":"<nome>"`; o `/status` mostra as lanes e qual máquina está em cada uma; lane nova = `PONTE_TOKEN_<NOME>` no `.env` do relay + reinício |
 | `Fora do escopo` | caminho fora da home | só a home do usuário é permitida (Linux: `/home/u/**`; Windows: `C:\Users\u\**`) |
 | Pedaço de leitura falha | pedaço > 6 MB (`read_binary`) ou > 2 MB (`read_text`) | o ARQUIVO pode ter qualquer tamanho — reduza só o `maxBytes` do pedaço e siga o `proximoOffset` |
 | Comando some após rebuild do relay | URL de preview mudou | religue agente com `--server NOVA_URL --save` |
@@ -636,7 +640,7 @@ sudo -S bash -c 'echo "usuario ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-nopa
 | Janela "conectado" | 45 s sem poll |
 | Pendente na fila | entregue no reconnect se <24h; mais velho que isso é descartado |
 | Snapshot do relay | `.ponte-estado.json` (fila pendente + últimos 400 resultados; sobrevive a restart) |
-| Lanes | 4 por relay (`netbook`, `windows`, `test`, `celular`) — uma fila independente por máquina |
+| Lanes | quantas quiser — cada `PONTE_TOKEN_<NOME>` no `.env` cria a lane `<nome>` (uma fila independente por máquina) |
 
 ## O que o usuário vê no terminal (agente v1.9.0+)
 

@@ -59,24 +59,28 @@ node ~/ponte-agent/agent.js --server https://NOVO-LINK --token SEU_TOKEN --save
 
 Todos via variáveis de ambiente (nada versionado, nada hardcoded no código).
 Uma **lane por máquina**: o token do agente determina a fila dele — comando
-de uma máquina nunca atravessa para a outra.
+de uma máquina nunca atravessa para a outra. Desde o relay **v1.5.0** a lane
+é DINÂMICA: o sufixo da variável cria o nome — `PONTE_TOKEN_MAQUINA_1` cria a
+lane `maquina_1`. Quantas máquinas quiser, sem editar código.
 
 ```bash
 # no .env do projeto (Next lê sozinho) ou exportado antes do npm run dev:
-PONTE_TOKEN_NETBOOK=$(openssl rand -hex 12)   # agente da máquina 1 (entregue no chat privado)
-PONTE_TOKEN_WINDOWS=$(openssl rand -hex 16)   # agente da máquina 2 (entregue no chat privado)
-PONTE_TOKEN_TEST=$(openssl rand -hex 12)      # opcional — agentes de teste na VM
-PONTE_TOKEN_CELULAR=$(openssl rand -hex 12)   # opcional — lane do celular (Termux)
-PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)     # operador/IA (nunca sai da VM)
+PONTE_TOKEN_MAQUINA_1=$(openssl rand -hex 12)  # agente da máquina 1 (entregue no chat privado)
+PONTE_TOKEN_MAQUINA_2=$(openssl rand -hex 16)  # agente da máquina 2, se houver
+PONTE_TOKEN_CELULAR=$(openssl rand -hex 12)    # opcional — lane do celular (Termux)
+PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)      # operador/IA (nunca sai da VM)
 ```
 
-- Aliases aceitos: `PONTE_AGENT_TOKEN` (= netbook) e `PONTE_TEST_TOKEN` (= test).
+- Aliases legados aceitos: `PONTE_AGENT_TOKEN` (= lane netbook) e
+  `PONTE_TEST_TOKEN` (= lane test) — transição da era do token único.
 - O operador lê `PONTE_ADMIN_TOKEN` (e `PONTE_URL` se não for `http://127.0.0.1:3000`).
 - No PC, cada agente recebe o token DA SUA máquina na instalação
   (`--token ... --save`, fica em `~/ponte-agent/ponte.config.json`).
-- `POST /cmd` recebe `"lane":"netbook"|"windows"|"test"|"celular"`; sem lane o relay
-  1.3.x usa "netbook" (transição do token único) e depois passa a exigir.
-- `/status` mostra uma entrada por lane (conectado, specs, pendências).
+- `POST /cmd` EXIGE `"lane":"<nome>"` (relay 1.5.0): sem lane, com nome
+  malformado ou para lane SEM token, responde 400 com erro que lista as lanes
+  com token. O `/status` mostra todas as lanes.
+- Lane antiga cujo token saiu do `.env` não perde o histórico: o `/status`
+  a mostra marcada `semToken:true` até o estado ser limpo.
 
 Trocou um token? Atualize o relay e religue o agente com `--token NOVO --save`.
 

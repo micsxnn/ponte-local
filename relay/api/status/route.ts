@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import {
   isAdminAuthorized,
   isConnected,
-  LANE_IDS,
+  laneTemToken,
   pendentesDaLane,
   ponte,
   PONTE_VERSION,
@@ -15,6 +15,10 @@ export const dynamic = "force-dynamic";
 // usuário, home e specs para qualquer um com a URL. VAZAMENTO — corrigido
 // na v1.3.1 (e o atalho ?admin= caiu na v1.4.0: token em URL vira log).
 // Sem token válido: 401, zero informação.
+//
+// v1.5.0: lanes dinâmicas — lista a UNIÃO das lanes com token no .env e das
+// lanes que já têm histórico no snapshot. Lane antiga cujo token saiu do
+// .env continua visível, marcada semToken:true (histórico não desaparece).
 export async function GET(req: NextRequest) {
   // SOMENTE header (v1.4.0): o fallback ?admin= que existia aqui colocava o
   // token de operador em URL — que vira registro em log de gateway/túnel.
@@ -27,10 +31,11 @@ export async function GET(req: NextRequest) {
   }
   const s = ponte();
   const agora = Date.now();
+  const ids = Array.from(new Set([...Object.keys(s.lanes)]));
   const lanes: Record<string, unknown> = {};
   let conectado = false;
-  for (const id of LANE_IDS) {
-    const ls = s.lanes[id];
+  for (const id of ids) {
+    const ls = s.lanes[id] ?? { lastSeen: 0, agentInfo: null };
     const on = isConnected(id);
     if (on) conectado = true;
     lanes[id] = {
@@ -38,6 +43,7 @@ export async function GET(req: NextRequest) {
       lastSeenAgoS: ls.lastSeen ? Math.round((agora - ls.lastSeen) / 1000) : null,
       agentInfo: ls.agentInfo,
       pending: pendentesDaLane(s, id),
+      semToken: !laneTemToken(id),
     };
   }
   return new Response(

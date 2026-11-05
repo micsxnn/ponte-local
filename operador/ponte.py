@@ -3,12 +3,13 @@
 ponte.py — operador da Ponte Local (lado da IA, dentro da VM).
 Uso: python3 ponte.py <ação> [args_json]
 Ex:  python3 ponte.py ping
-     PONTE_LANE=windows python3 ponte.py list '{"path":"C:\\Users\\u\\Downloads"}'
+     PONTE_LANE=maquina-2 python3 ponte.py list '{"path":"C:\\Users\\u\\Downloads"}'
 Envia o comando para a LANE alvo (a máquina que executa), espera o resultado
 e imprime o JSON completo. Uma lane por máquina — comando não atravessa.
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -17,12 +18,16 @@ BASE = os.environ.get("PONTE_URL", "http://127.0.0.1:3000")
 # Token admin da ponte — exporte antes de usar:
 #   export PONTE_ADMIN_TOKEN=<o mesmo do relay>
 ADMIN_TOKEN = os.environ.get("PONTE_ADMIN_TOKEN", "")
-# Lane alvo: netbook | windows | test (padrão: netbook).
+# Lane alvo (OBRIGATÓRIA desde o relay 1.5.0): o NOME da lane — o /status do
+# relay mostra as lanes existentes (cada uma nasce de PONTE_TOKEN_<NOME> lá).
 # Legado aceito: PONTE_CHANNEL=prod → netbook; PONTE_CHANNEL=test → test.
-_LANE_RAW = os.environ.get("PONTE_LANE") or os.environ.get("PONTE_CHANNEL") or "netbook"
+_LANE_RAW = os.environ.get("PONTE_LANE") or os.environ.get("PONTE_CHANNEL") or ""
 LANE = {"prod": "netbook"}.get(_LANE_RAW, _LANE_RAW)
-if LANE not in ("netbook", "windows", "test"):
-    print("ERRO: PONTE_LANE inválida (%r) — use netbook|windows|test" % _LANE_RAW)
+if not LANE:
+    print("ERRO: informe a lane alvo — export PONTE_LANE=<nome> (o /status do relay mostra as lanes)")
+    sys.exit(1)
+if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", LANE):
+    print("ERRO: PONTE_LANE inválida (%r) — use a-z, 0-9, \"-\" e \"_\" (começando com letra ou número)" % LANE)
     sys.exit(1)
 _STATE_DIR = os.environ.get("PONTE_STATE_DIR", os.path.dirname(os.path.abspath(__file__)))
 
@@ -87,11 +92,11 @@ def main():
     if not ADMIN_TOKEN:
         print("ERRO: PONTE_ADMIN_TOKEN não definido.")
         print("  export PONTE_ADMIN_TOKEN=<o mesmo token configurado no relay>")
-        print("  (e PONTE_URL/PONTE_LANE se não for 127.0.0.1:3000/netbook)")
+        print("  (e PONTE_URL/PONTE_LANE se o relay não for 127.0.0.1:3000)")
         return 1
     if len(sys.argv) < 2:
         print("uso: ponte.py <ação> [args_json] | --status | --drain | pegar <remoto> <local> | enviar <local> <remoto>")
-        print("  lane alvo via env: PONTE_LANE=netbook|windows|test|celular (padrão netbook)")
+        print("  lane alvo via env: PONTE_LANE=<nome> — obrigatória; o /status do relay mostra as lanes")
         return 1
     if sys.argv[1] == "--status":
         print(json.dumps(req("/api/ponte/status"), ensure_ascii=False, indent=2))

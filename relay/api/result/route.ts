@@ -16,6 +16,10 @@ const MAX_BODY = 12_000_000; // 12 MB (resultados podem carregar base64 p/ read_
 // Corpo: { id, ok, data?, error?, durationMs?, announce? }
 // "announce" é enviado junto ao resultado do ping com as infos da máquina.
 // O resultado cai na lane do token — máquina não vê resultado da outra.
+//
+// v1.5.0: resultado DUPLICADO é idempotente — o agente 1.11.0 tem retry de
+// resultado (rede falhou depois do comando rodar), então o mesmo id pode
+// chegar duas vezes. Antes o retry inflava histórico e totalResults.
 export async function POST(req: NextRequest) {
   const token = req.headers.get("x-ponte-token");
   const lane = laneForAgent(token);
@@ -55,11 +59,21 @@ export async function POST(req: NextRequest) {
   if (cmd && cmd.lane !== lane) {
     return Response.json({ ok: false, error: "Esse comando pertence a outra lane" }, { status: 403 });
   }
-  if (!cmd && !s.results.some((r) => r.id === body.id) && !s.respondidos.includes(body.id)) {
+  const jáTem = s.results.find((r) => r.id === body.id);
+  if (jáTem && jáTem.lane !== lane) {
+    return Response.json({ ok: false, error: "Esse resultado pertence a outra lane" }, { status: 403 });
+  }
+  if (!cmd && !jáTem && !s.respondidos.includes(body.id)) {
     return Response.json(
       { ok: false, error: "Comando desconhecido nesta lane — resultado recusado" },
       { status: 404 }
     );
+  }
+  if (jáTem) {
+    // Retry do agente chegando com resultado já registrado (v1.5.0):
+    // confirma recebimento sem duplicar histórico/contagem.
+    if (body.announce && typeof body.announce === "object") setAgentInfo(lane, body.announce);
+    return Response.json({ ok: true, duplicado: true });
   }
   pushResult({
     id: body.id,
