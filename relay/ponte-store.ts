@@ -38,8 +38,14 @@
 // - Dono por id (lanePorId): resultado para id de OUTRA lane é recusado mesmo
 //   depois que o comando sai do histórico (antes, id na janela global
 //   `respondidos` fora da janela de results aceitava resultado de qualquer token).
-// - Resultado com data >200k chars é cortado ANTES de entrar em memória
-//   (antes cortava só no snapshot — a memória crescia sem teto).
+// - Resultado com data gigante, DOIS cortes (v1.5.2): a MEMÓRIA guarda data
+//   até 10M chars — o teto de 200k da v1.5.1 destruiu os pedaços do download
+//   (pedaço de 4-6 MB vira 5-8M chars em base64 e o /results entregava
+//   {_cortado}; o "pegar" gravava 0 bytes em silêncio). 10M = o máximo que o
+//   próprio agente manda (ele recusa resultado >10,5 MB). O SNAPSHOT em disco
+//   continua cortando em 200k — o .ponte-estado.json fica enxuto; após restart,
+//   payloads grandes do HISTÓRICO voltam {_cortado} (entregues em tempo real
+//   são sempre íntegros).
 // - Poll entrega no máximo ~32 MB de args por chamada (resto fica pendente).
 // - Persistência falhou → comando novo é recusado com 503 (não aceita em
 //   silêncio um id que o restart perderia).
@@ -159,7 +165,7 @@ export function lanesComToken(): string[] {
 
 export const ADMIN_TOKEN = tokensEnv("PONTE_ADMIN_TOKEN")[0] ?? "";
 
-export const PONTE_VERSION = "1.5.1";
+export const PONTE_VERSION = "1.5.2";
 export const CONNECTED_WINDOW_MS = 45_000;
 
 // Arquivos de estado ao lado do projeto (funciona em qualquer deploy):
@@ -309,9 +315,19 @@ function loadSnapshot(): Snapshot | null {
   }
 }
 
-// Resultado com data gigante (base64 de read_binary etc.) entra sem o payload.
-// v1.5.1: o corte acontece ANTES do push em memória — antes só o snapshot
-// cortava e a memória crescia sem teto em sequência de resultados grandes.
+// DOIS cortes (v1.5.2) — ver o comentário das correções no topo do arquivo:
+// resultadoParaMemoria (pushResult) mantém pedaços de download íntegros;
+// resultadoParaSnapshot (saveSnapshot) mantém o arquivo de estado enxuto.
+function resultadoParaMemoria(r: PonteResult): PonteResult {
+  if (r.data === undefined || r.data === null) return r;
+  try {
+    if (JSON.stringify(r.data).length <= 10_000_000) return r;
+  } catch {
+    return { ...r, data: undefined };
+  }
+  return { ...r, data: { _cortado: "payload grande não armazenado (>10M chars)" } };
+}
+
 function resultadoParaSnapshot(r: PonteResult): PonteResult {
   if (r.data === undefined || r.data === null) return r;
   try {
@@ -569,7 +585,7 @@ export function pollFresh(lane: LaneId): { commands: PonteCommand[]; nextCursor:
 export function pushResult(r: PonteResult): void {
   const s = ponte();
   s.totalResults += 1;
-  s.results.push(resultadoParaSnapshot(r)); // v1.5.1: corta ANTES de entrar em memória
+  s.results.push(resultadoParaMemoria(r)); // v1.5.2: pedaços íntegros na memória; snapshot corta à parte
   if (s.results.length > MAX_RESULTS) s.results = s.results.slice(-MAX_RESULTS);
   if (!s.respondidos.includes(r.id)) {
     s.respondidos.push(r.id);
