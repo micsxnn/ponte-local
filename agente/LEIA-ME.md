@@ -10,8 +10,8 @@ VM**, sem você precisar copiar nada manualmente.
    "tem comando novo?"
 2. Quando eu mando um comando, o agente executa **localmente no seu disco**.
 3. O resultado (listagens, caminhos, confirmações) volta pela ponte.
-   **Seus arquivos nunca são enviados para lugar nenhum** — só texto de
-   comandos e respostas trafega.
+   **Nada sai do seu PC por conta própria** — o CONTEÚDO de um arquivo só
+   trafega (em base64) quando VOCÊ pede (`pegar`/read_binary), sob demanda.
 
 ## Requisitos
 

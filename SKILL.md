@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.8.1 -->
+<!-- skill-version: 3.8.2 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -123,10 +123,10 @@ export PONTE_ADMIN_TOKEN=o-token-de-admin
 curl -s $PONTE_URL/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"
 
 # enfileira um comando — diga A QUAL MÁQUINA (lane, veja no /status);
-# resposta: {"ok":true,"id":77,"lane":"maquina-1"}
+# resposta: {"ok":true,"id":77,"lane":"maquina_1"}
 curl -s -X POST $PONTE_URL/api/ponte/cmd \
   -H "x-ponte-admin: $PONTE_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"lane":"maquina-1","action":"ping","args":{}}'
+  -d '{"lane":"maquina_1","action":"ping","args":{}}'
 
 # alguns segundos depois (o agente polla a cada 1,5 s), leia desde id-1
 curl -s "$PONTE_URL/api/ponte/results?since=76" \
@@ -142,7 +142,9 @@ curl -s "$PONTE_URL/api/ponte/results?since=76" \
 4. Daí em diante, a tabela da **Fase 4** vale igual — mesmas ações, mesmos
    limites. Texto, JSON e base64 cabem no curl; para arquivos grandes use
    `read_binary`/`read_text` por pedaços (funciona no curl) ou o `ponte.py
-   enviar/pegar` na SUA máquina, se tiver Python.
+   enviar/pegar` na SUA máquina, se tiver Python — ATENÇÃO: o `pegar` baixa
+   só o 1º pedaço (~6 MB); arquivo maior que isso tem que ir por `read_binary`
+   em pedaços seguindo o `proximoOffset`.
 
 **Sobre a URL de quem hospeda:** a ponte pode rodar num preview de plataforma
 (ex.: z.ai) e mesmo assim ser operada por Claude, Manus ou um terminal
@@ -414,7 +416,7 @@ e imprime o JSON. Configure antes:
 ```bash
 export PONTE_URL=https://SEU-RELAY
 export PONTE_ADMIN_TOKEN=<o mesmo do relay>
-export PONTE_LANE=maquina-1 # a máquina alvo — o NOME da lane (veja as lanes no /status)
+export PONTE_LANE=maquina_1 # a máquina alvo — o NOME da lane (veja as lanes no /status; env não aceita hífen, então lanes nascidas de PONTE_TOKEN_<NOME> usam _)
 ```
 
 Detalhe: o primeiro poll do agente (reconexão) **não pula mais a fila**: o
@@ -427,7 +429,7 @@ o poll segue normal pelo cursor.
 ## Fase 4 — Operar (referência das ações)
 
 Envie comandos por `POST /api/ponte/cmd` com header `x-ponte-admin: ADMIN_TOKEN`,
-corpo `{"lane":"maquina-1","action":"...","args":{...}}` (a lane é a máquina alvo;
+corpo `{"lane":"maquina_1","action":"...","args":{...}}` (a lane é a máquina alvo;
 obrigatória desde o relay 1.5.0) — ou via `ponte.py`:
 
 ```bash
@@ -613,7 +615,7 @@ sudo -S bash -c 'echo "usuario ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-nopa
 | PowerShell: "o termo node não é reconhecido" logo após instalar o Node | o PATH novo não entra em janelas de terminal já abertas | feche TODAS as janelas do PowerShell, abra uma nova e repita o comando |
 | Relatório da tarefa não abriu | Linux sem ambiente gráfico (SSH/servidor) | o arquivo está em `~/ponte-agent/relatorio-ponte.txt` — o agente avisa no terminal; abra no editor do usuário |
 | Agente não conecta (`connected:false`) | URL/token errados ou server reiniciou sem tokens | confira `--server`, reexporte tokens, religue o agente |
-| `TEMPO ESGOTADO` com agente conectado | baseline do operador maior que os ids da instância nova | apague `.ponte_since_prod` em `PONTE_STATE_DIR` (corrigido: fallback é 0) |
+| `TEMPO ESGOTADO` com agente conectado | baseline do operador maior que os ids da instância nova | apague `.ponte_since_<nome-da-lane>` na pasta do `ponte.py` (ou em `PONTE_STATE_DIR`, se definido) |
 | `TEMPO ESGOTADO` em modo supervisionado | ninguém apertou `s` | reenvie; use `PONTE_WAIT_S=150+` |
 | `Fila de comandos cheia` | agente offline/travado acumulando além de 100 | verifique `--status`; religue o agente — pendentes <24h drenam sozinhos no reconnect |
 | Agente Windows "congela" com a janela parecendo normal | QuickEdit do console: um clique dentro da janela congela o stdout do node | rode pelo `rodar.bat` (log em arquivo + QuickEdit off); opcional: `watchdog.bat` religa sozinho |
@@ -632,7 +634,7 @@ sudo -S bash -c 'echo "usuario ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-nopa
 | Pedaço de `read_binary` | 6 MB por chamada (padrão 4 MB em arquivos grandes) |
 | Tamanho do ARQUIVO lido | ilimitado — leitura por pedaços (`offset` → `proximoOffset`) |
 | Binário gravado (`write_binary`) | 8 MB |
-| Timeout por `run_command` | 30 min |
+| Timeout por `run_command` | padrão 3 min; teto 30 min (`timeoutMin`) |
 | Resposta do comando | 150.000 caracteres |
 | Tamanho do comando | 4.000 caracteres |
 | Fila de comandos pendentes | 100 |
@@ -676,6 +678,6 @@ copy "$HOME\Downloads\agent-vNOVA.js" "$HOME\ponte-agent\agent.js"
 ```
 SKILL.md       ← este arquivo (instruções para você, IA)
 agente/        agent.js + LEIA-ME.md + rodar.sh + atualizar.sh + rodar.bat + watchdog.bat  (lado do PC)
-relay/         ponte-store.ts + api/ponte/*/route.ts + painel/ + RESTAURAR.md (lado do servidor)
+relay/         ponte-store.ts + api/<rota>/route.ts + painel/ + RESTAURAR.md (lado do servidor)
 operador/      ponte.py + teste-ponte*.sh  (CLI da IA na VM)
 ```
