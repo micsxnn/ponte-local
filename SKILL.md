@@ -17,7 +17,7 @@ description: >-
   hospedar nada.
 ---
 
-<!-- skill-version: 4.1.0 -->
+<!-- skill-version: 4.1.1 -->
 
 # Ponte Local — operação remota do PC do usuário
 
@@ -59,7 +59,7 @@ lane polla, executa → responde `POST /result` → você lê em
 | `poll` | o agente checar o relay a cada 1,5 s ("tem coisa pra mim?") |
 | `token` | senha de 24+ caracteres; um por máquina (`PONTE_TOKEN_*`) + um seu (`PONTE_ADMIN_TOKEN`) |
 | `ADMIN_TOKEN` | o SEU token de operador — usado no header `x-ponte-admin` |
-| `.env` | arquivo de variáveis do relay no servidor; é lá que os tokens nascem |
+| `.env` | arquivo de variáveis do relay no servidor; é lá que os tokens nascem (em hospedagem que limpa `.env`, nascem no `.env.ponte` — ver Passo 2) |
 | `/status` | o painel privado do operador (JSON): versão, lanes, quem está conectado |
 | `pedaço` / `proximoOffset` | leitura de arquivo fatiada; cada resposta traz o offset do próximo pedaço |
 | `modo deus` | agente para de pedir s/N para `run_command`; ativado só com aceite do usuário NO CHAT |
@@ -233,12 +233,22 @@ PONTE_TOKEN_MAQUINA_1=cole-aqui-o-valor-gerado
 # PONTE_TOKEN_MAQUINA_2=cole-aqui-o-valor-gerado   ← só se houver 2ª máquina
 ```
 
+> **Hospedagem que apaga credencial de `.env`?** Algumas sandboxes/VMs de
+> plataforma fazem isso — o relay recarrega e as lanes caem (o "token que
+> some toda hora"). Nelas use o mecanismo **tokens eternos**: os tokens
+> moram num arquivo irmão `.env.ponte` (que essas plataformas ignoram) e são
+> **exportados no ambiente do processo** pelo `relay/iniciar-relay.sh` do
+> repo (ele sobe, espera e valida o relay; `--reiniciar` força). Nesse modo
+> o `.env` fica SEM `PONTE_*` de propósito — estado correto, não defeito:
+> NÃO re-adicione. Os comandos abaixo funcionam nos dois modos (o `grep`
+> consulta `.env` e `.env.ponte`).
+
 Carregue o token de admin AGORA — os curls dos Passos 2, 3 e 5 usam
 `$PONTE_ADMIN_TOKEN` (exportar só no § 4 é tarde):
 
 ```bash
 # ONDE: no seu servidor/VM (na pasta do relay)
-export PONTE_ADMIN_TOKEN=$(grep -E '^PONTE_ADMIN_TOKEN=' .env | cut -d= -f2-)
+export PONTE_ADMIN_TOKEN=$(grep -hE '^PONTE_ADMIN_TOKEN=' .env .env.ponte 2>/dev/null | head -n1 | cut -d= -f2-)
 ```
 
 **Regras do nome da lane (onde TODO agente se confunde — leia devagar):**
@@ -251,20 +261,23 @@ export PONTE_ADMIN_TOKEN=$(grep -E '^PONTE_ADMIN_TOKEN=' .env | cut -d= -f2-)
 - Teto de TAMANHO: a lane (sufixo em minúsculas) tem no máximo 32 caracteres —
   sufixo maior é descartado EM SILÊNCIO no boot; sintoma: "lane sem token" com
   a linha certa no `.env`.
-- Máquina nova = linha nova no `.env`. Nunca o mesmo token em duas máquinas —
-  a lane É a máquina.
+- Máquina nova = linha nova no `.env` (ou no `.env.ponte`, no modo tokens
+  eternos). Nunca o mesmo token em duas máquinas — a lane É a máquina.
 - Aliases legados que ainda valem (transição do token único):
   `PONTE_AGENT_TOKEN` → lane `netbook`; `PONTE_TEST_TOKEN` → lane `test`.
 - **Trocou ou criou token no `.env`? REINICIE o relay.** A lane nasce no boot;
   sem restart o `/cmd` responde "lane sem token" e você vai achar que é erro
   de digitação. (É para reiniciar que serve esta lista: token criado, token
-  trocado, máquina nova no `.env` — sempre restart.)
+  trocado, máquina nova no `.env` — sempre restart.) No modo tokens eternos,
+  edite o `.env.ponte` e reinicie com `bash relay/iniciar-relay.sh --reiniciar`.
 
 Suba o relay **já em background** (se a sessão morrer, a ponte cai):
 
 ```bash
 # ONDE: no seu servidor/VM
 nohup npm run dev > relay.log 2>&1 &   # porta 3000 (ocupada? PORT=3001 npm run dev)
+# hospedagem que limpa .env? em vez do nohup acima:
+bash relay/iniciar-relay.sh            # sobe com os tokens no ambiente do processo
 ```
 
 Subiu em outra porta? Troque o `3000` em TODOS os comandos seguintes — curls
@@ -275,7 +288,7 @@ Valide **local**:
 
 ```bash
 # ONDE: no seu servidor/VM
-curl -s -H "x-ponte-admin: $(grep -E '^PONTE_ADMIN_TOKEN=' .env | cut -d= -f2-)" \
+curl -s -H "x-ponte-admin: $(grep -hE '^PONTE_ADMIN_TOKEN=' .env .env.ponte 2>/dev/null | head -n1 | cut -d= -f2-)" \
   http://127.0.0.1:3000/api/ponte/status
 # esperado: {"ok":true,"connected":false,"lanes":{...},"version":"..."}
 # SEM o header: 401 — o status é privado. 401 COM header? valor sujo
