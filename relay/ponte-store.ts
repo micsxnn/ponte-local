@@ -12,7 +12,7 @@
 // - A lane nasce da variável de ambiente: PONTE_TOKEN_<NOME> cria a lane
 //   "nome" (sufixo em minúsculas). Máquina nova = linha nova no .env, sem
 //   editar fonte. Nomes pessoais deixaram de estar hardcoded no projeto
-//   público — exemplos de documentação viram "maquina-1", "pc" etc.
+//   público — exemplos de documentação viram "maquina_1", "pc" etc.
 // - Aliases legados mantidos: PONTE_AGENT_TOKEN (= netbook) e
 //   PONTE_TEST_TOKEN (= test) — transição da era do token único.
 // - Lanes antigas que sumiram do .env não perdem o histórico: o snapshot

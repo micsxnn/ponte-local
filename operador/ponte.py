@@ -3,7 +3,7 @@
 ponte.py — operador da Ponte Local (lado da IA, dentro da VM).
 Uso: python3 ponte.py <ação> [args_json]
 Ex:  python3 ponte.py ping
-     PONTE_LANE=maquina-2 python3 ponte.py list '{"path":"C:\\Users\\u\\Downloads"}'
+     PONTE_LANE=maquina_2 python3 ponte.py list '{"path":"C:\\Users\\u\\Downloads"}'
 Envia o comando para a LANE alvo (a máquina que executa), espera o resultado
 e imprime o JSON completo. Uma lane por máquina — comando não atravessa.
 """
