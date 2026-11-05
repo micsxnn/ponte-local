@@ -4,12 +4,12 @@ set -e
 AGENT_TOKEN="${PONTE_TEST_TOKEN:?export PONTE_TEST_TOKEN antes (canal test)}"
 ADMIN_TOKEN="${PONTE_ADMIN_TOKEN:?export PONTE_ADMIN_TOKEN antes (o mesmo do relay)}"
 BASE="http://127.0.0.1:3000"
-AGENT_DIR="/home/z/my-project/download/ponte-agent"
-TEST_HOME="/home/z/ponte-teste-home2"
-py() { PONTE_CHANNEL=test python3 /home/z/my-project/scripts/ponte.py "$@"; }
+AGENT_DIR="$(cd "$(dirname "$0")/.." && pwd)/agente"
+TEST_HOME="/tmp/ponte-teste-home2"
+py() { PONTE_LANE=test python3 "$(dirname "$0")/ponte.py" "$@"; }
 
 echo "=== 1. Home falsa v2 ==="
-rm -rf "$TEST_HOME" /home/z/my-project/scripts/.ponte_since_test
+rm -rf "$TEST_HOME" /tmp/.ponte_since_test
 mkdir -p "$TEST_HOME/Downloads" "$TEST_HOME/Fotos"
 echo "relatorio" > "$TEST_HOME/Downloads/doc.pdf"
 head -c 30000 /dev/urandom > "$TEST_HOME/Downloads/foto.jpg"

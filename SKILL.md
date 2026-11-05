@@ -17,7 +17,7 @@ description: >-
   o ADMIN_TOKEN — sem hospedar nada.
 ---
 
-<!-- skill-version: 3.6.0 -->
+<!-- skill-version: 3.7.0 -->
 
 # Ponte Local — skill de operação remota do PC do usuário
 
@@ -187,6 +187,7 @@ cd ponte-relay
 export PONTE_TOKEN_NETBOOK=$(openssl rand -hex 12)  # agente da máquina 1 (entregue no chat privado)
 export PONTE_TOKEN_WINDOWS=$(openssl rand -hex 16)  # agente da máquina 2, se houver
 export PONTE_TOKEN_TEST=$(openssl rand -hex 12)     # opcional: agentes de teste na VM
+export PONTE_TOKEN_CELULAR=$(openssl rand -hex 12)  # opcional: lane do celular (Termux)
 export PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)    # só você usa
 npm run dev                                        # porta 3000
 ```
@@ -202,8 +203,9 @@ entrega privada inicial ao usuário. `.env`, `.ponte-estado.json`,
 `.gitignore` ANTES do primeiro push. Token que apareceu em arquivo versionado
 é token QUEIMADO: gere outro (`openssl rand -hex 16`), troque no `.env` da VM
 e reinstale na máquina afetada. O `/status` e o painel são PRIVADOS desde o
-relay 1.3.1 (header `x-ponte-admin` ou `?admin=`): sem token válido respondem
-401 e não revelam nem que as máquinas existem.
+relay 1.3.1 e, desde a 1.4.0, ACEITAM SÓ O HEADER `x-ponte-admin` — o atalho
+`?admin=` saiu do ar (token em URL vira registro em log de gateway/túnel).
+Sem token válido respondem 401 e não revelam nem que as máquinas existem.
 
 Na sua VM, rode o dev server **em background e deixe no ar** (`nohup npm run dev &`,
 `setsid` ou `tmux`) — se a sessão morrer, a ponte cai e o agente fica esperando.
@@ -286,7 +288,7 @@ o mesmo JSON:
 ```bash
 curl -s http://127.0.0.1:3000/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"  # relay no ar
 curl -s https://A-URL/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"          # roteamento externo OK
-# sem o header, ambas devem responder 401 — o status é privado (relay 1.3.1+)
+# sem o header, ambas devem responder 401 — o status é privado (relay 1.3.1+; só header desde a 1.4.0)
 ```
 
 Local ok + público 404 = o relay está bem; o problema é roteamento/gateway.

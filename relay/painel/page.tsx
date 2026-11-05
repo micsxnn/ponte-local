@@ -31,17 +31,19 @@ interface LaneStatus {
 interface Status {
   ok: boolean;
   connected: boolean;
-  lanes: { netbook: LaneStatus; windows: LaneStatus };
+  lanes: Record<string, LaneStatus>;
 }
 
 const TOKEN_KEY = "ponte-admin-token";
 const VIEW_KEY = "ponte-view";
 
-type Visao = "todas" | "netbook" | "windows";
+type Visao = "todas" | "netbook" | "windows" | "test" | "celular";
 
-const MAQUINAS: Array<{ lane: "netbook" | "windows"; nome: string }> = [
+const MAQUINAS: Array<{ lane: "netbook" | "windows" | "test" | "celular"; nome: string }> = [
   { lane: "netbook", nome: "Netbook" },
   { lane: "windows", nome: "Windows" },
+  { lane: "test", nome: "Teste" },
+  { lane: "celular", nome: "Celular" },
 ];
 
 function fmtGB(n?: number): string {
@@ -69,7 +71,14 @@ function CartaoMaquina({ nome, lane, st }: { nome: string; lane: string; st: Lan
     <div className="w-full rounded-xl border border-zinc-800 bg-zinc-900 p-5 font-mono text-sm text-zinc-300">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-zinc-100">{nome}</h2>
-        <span className="text-[10px] uppercase tracking-wider text-zinc-600">lane {lane}</span>
+        <div className="flex items-center gap-2">
+          {st != null && st.pending > 0 && (
+            <span className="rounded bg-amber-950 px-1.5 py-0.5 text-[10px] text-amber-400">
+              {st.pending} pendente{st.pending > 1 ? "s" : ""}
+            </span>
+          )}
+          <span className="text-[10px] uppercase tracking-wider text-zinc-600">lane {lane}</span>
+        </div>
       </div>
       <div className="mt-3 flex items-center gap-2">
         <span
@@ -157,7 +166,7 @@ export default function Home() {
     const t = localStorage.getItem(TOKEN_KEY);
     if (t) setToken(t);
     const v = localStorage.getItem(VIEW_KEY);
-    if (v === "netbook" || v === "windows" || v === "todas") setVisao(v);
+    if (v === "netbook" || v === "windows" || v === "test" || v === "celular" || v === "todas") setVisao(v);
   }, []);
 
   useEffect(() => {
@@ -223,6 +232,8 @@ export default function Home() {
               <option value="todas">ver: todas</option>
               <option value="netbook">ver: só netbook</option>
               <option value="windows">ver: só windows</option>
+              <option value="test">ver: só teste</option>
+              <option value="celular">ver: só celular</option>
             </select>
             <button
               className="rounded-lg border border-zinc-700 px-2 py-1.5 text-zinc-500 hover:text-zinc-200"

@@ -10,13 +10,15 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// GET /api/ponte/status  (PRIVADO — somente o operador, header x-ponte-admin
-// ou ?admin=). Era público até v1.3.0: expunha a existência das máquinas,
-// nomes de usuário, home e specs para qualquer um com a URL. VAZAMENTO —
-// corrigido na v1.3.1. Sem token válido: 401, zero informação.
+// GET /api/ponte/status  (PRIVADO — somente o operador, header x-ponte-admin).
+// Era público até v1.3.0: expunha a existência das máquinas, nomes de
+// usuário, home e specs para qualquer um com a URL. VAZAMENTO — corrigido
+// na v1.3.1 (e o atalho ?admin= caiu na v1.4.0: token em URL vira log).
+// Sem token válido: 401, zero informação.
 export async function GET(req: NextRequest) {
-  const token =
-    req.headers.get("x-ponte-admin") ?? new URL(req.url).searchParams.get("admin");
+  // SOMENTE header (v1.4.0): o fallback ?admin= que existia aqui colocava o
+  // token de operador em URL — que vira registro em log de gateway/túnel.
+  const token = req.headers.get("x-ponte-admin");
   if (!isAdminAuthorized(token)) {
     return Response.json(
       { ok: false, error: "Painel privado do operador — token ausente ou inválido" },

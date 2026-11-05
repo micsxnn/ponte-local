@@ -16,6 +16,18 @@ export async function POST(req: NextRequest) {
   if (!isAdminAuthorized(token)) {
     return Response.json({ ok: false, error: "Não autorizado" }, { status: 401 });
   }
+  // TETO REAL do corpo (v1.4.0): a constante declarada 12 MB nunca era
+  // aplicada — um POST gigante era inteiramente lido/parsedo em memória.
+  const len = parseInt(req.headers.get("content-length") ?? "0", 10);
+  if (len > MAX_BODY) {
+    return Response.json({ ok: false, error: "Corpo grande demais (limite 12 MB)" }, { status: 413 });
+  }
+  if (!len && (req.headers.get("transfer-encoding") ?? "").toLowerCase().includes("chunked")) {
+    return Response.json(
+      { ok: false, error: "Chunked sem content-length não é aceito (limite não verificável)" },
+      { status: 411 }
+    );
+  }
   let body: { lane?: string; action?: string; args?: Record<string, unknown> };
   try {
     body = await req.json();
@@ -24,6 +36,12 @@ export async function POST(req: NextRequest) {
   }
   if (!body.action || typeof body.action !== "string") {
     return Response.json({ ok: false, error: "Falta a ação" }, { status: 400 });
+  }
+  if (!/^[a-z_]{1,32}$/.test(body.action)) {
+    return Response.json(
+      { ok: false, error: "Ação inválida (a-z e _, até 32 caracteres)" },
+      { status: 400 }
+    );
   }
   let lane: LaneId = "netbook";
   if (body.lane != null && body.lane !== "") {

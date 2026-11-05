@@ -50,7 +50,8 @@ VM**, sem você precisar copiar nada manualmente.
    (O painel do relay, quando existe, é só um visor mínimo — specs da máquina
    e luz de conexão; nada da instalação depende dele.)
 
-Para encerrar: `Ctrl+C` (sai direto, sem relatório). Para religar: `node agent.js`.
+Para encerrar: `Ctrl+C` (se houver tarefa em andamento, o relatório é gerado
+antes de sair — nada se perde). Para religar: `node agent.js`.
 
 **No Windows**, depois da primeira configuração, prefira o `rodar.bat` (duplo
 clique) — veja a seção abaixo. Ele resolve um problema clássico do console
@@ -176,15 +177,18 @@ da skill e se o modo deus está ativo.
 
 ## Relatório da tarefa (a IA fecha com `task_done`)
 
-Quem decide que a tarefa acabou é a IA — sem cronômetro. Quando ela termina
+Quem decide que a tarefa acabou é a IA — mas desde a v1.10.0 há um cronômetro
+de segurança: tarefa parada por mais de 3 minutos (env `PONTE_TAREFA_GAP_MS`)
+fecha sozinha e o relatório abre mesmo sem `task_done` (o agente como serviço
+nunca mais "esquece" o relatório). Quando ela termina
 o trabalho, manda o comando `task_done` com um `resumo` em texto do que foi
 feito e o agente, na hora, grava `relatorio-ponte.txt` na pasta dele e abre
 na sua tela: duração, modo ativo, quantos comandos rodaram e, em linguagem
 de gente, **O QUE FOI FEITO** — sem lista de comandos. Se algo deu errado,
 aparece uma seção "FALHAS" no fim. Quando a TAREFA SEGUINTE começa, o agente
 fecha a janela do relatório anterior sozinho e apaga o txt (também no boot
-do agente); encerrar com `Ctrl+C` sai direto, sem relatório. Se aparecer
-`abriuRelatorio:false`, não houve comando de trabalho.
+do agente); encerrar com `Ctrl+C` com tarefa aberta gera o relatório antes
+de sair. Se aparecer `abriuRelatorio:false`, não houve comando de trabalho.
 
 Comandos exatos que ele usa para abrir, por plataforma:
 

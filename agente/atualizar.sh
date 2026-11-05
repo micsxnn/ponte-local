@@ -1,30 +1,44 @@
 #!/usr/bin/env bash
-# Ponte Local — atualiza o agente para a v1.2.0 (modo autônomo disponível)
-# Roda NO SEU COMPUTADOR: bash ~/ponte-update/atualizar.sh
-set -e
-SRC="$HOME/ponte-update/agent.js"
-[ -f "$SRC" ] || { echo "[x] $SRC nao encontrado"; exit 1; }
+# Ponte Local — atualiza o agent.js COM VALIDAÇÃO e rollback (v1.11.0)
+# Baixa direto do relay, confere com node --check e só então substitui.
+# uso: bash atualizar.sh [URL-DO-RELAY]
+#      sem argumento, usa o server salvo no ponte.config.json local
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+SRC="${1:-}"
+if [ -z "$SRC" ] && [ -f "$DIR/ponte.config.json" ]; then
+  SRC=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DIR/ponte.config.json','utf8')).server||'')}catch(e){}" 2>/dev/null || true)
+fi
+[ -n "$SRC" ] || { echo "[x] uso: bash atualizar.sh URL-DO-RELAY (ex.: https://seu-relay)"; exit 1; }
+SRC="${SRC%/}"
 
 DEST=""
-for cand in "$HOME/ponte-agent" "$HOME/Downloads/ponte-agent" "$HOME/Documentos/ponte-agent" "$HOME/Area de trabalho/ponte-agent" "$HOME/Desktop/ponte-agent"; do
+for cand in "$DIR" "$HOME/ponte-agent" "$HOME/Downloads/ponte-agent" "$HOME/Documentos/ponte-agent" "$HOME/Desktop/ponte-agent"; do
   if [ -f "$cand/agent.js" ]; then DEST="$cand"; break; fi
 done
-if [ -z "$DEST" ]; then
-  read -rp "Nao achei a pasta do agente. Digite o caminho dela (ex: ~/ponte-agent): " DEST
-  DEST="${DEST/#\~/$HOME}"
-fi
-[ -f "$DEST/agent.js" ] || { echo "[x] Sem agent.js em: $DEST"; exit 1; }
+[ -n "$DEST" ] || { echo "[x] agent.js não encontrado (nem em $DIR nem nos caminhos padrão)"; exit 1; }
 
-cp "$DEST/agent.js" "$DEST/agent.js.bak"
-cp "$SRC" "$DEST/agent.js"
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+echo "[*] baixando agente de: $SRC/api/ponte/download"
+curl -fsSL "$SRC/api/ponte/download" -o "$TMP" || { echo "[x] download falhou — versão atual INTACTA"; exit 1; }
+node --check "$TMP" || { echo "[x] agent.js baixado é inválido (node --check falhou) — NADA foi trocado"; exit 1; }
+
+if [ -f "$DEST/agent.js" ]; then
+  cp "$DEST/agent.js" "$DEST/agent.js.bak"
+fi
+mv -f "$TMP" "$DEST/agent.js"
+chmod 600 "$DEST/ponte.config.json" 2>/dev/null || true
+
+NOVA=$(node -e "try{console.log(require('$DEST/agent.js').VERSION)}catch(e){console.log('?')}" 2>/dev/null || echo "?")
 echo ""
-echo "[OK] Agente atualizado para v1.2.0 em: $DEST"
-echo "(backup da versao antiga salvo como agent.js.bak)"
+echo "[✓] Agente atualizado: v$NOVA em $DEST"
+echo "    Backup da anterior: agent.js.bak (rollback: cp agent.js.bak agent.js)"
 echo ""
-echo "PROXIMO PASSO - reinicie o agente no modo que preferir:"
-echo "  1) Ctrl+C no terminal onde o agente esta rodando"
+echo "PROXIMO PASSO — reinicie o agente no modo que preferir:"
+echo "  1) Ctrl+C no terminal onde o agente está rodando"
 echo "  2) escolha um dos modos:"
-echo "       node \"$DEST/agent.js\"                    # arquivos apenas (padrao)"
+echo "       node \"$DEST/agent.js\"                    # arquivos apenas (padrão)"
 echo "       node \"$DEST/agent.js\" --allow-run --save  # supervisionado (aperta s/N)"
-echo "       node \"$DEST/agent.js\" --auto --save       # autonomo (executa direto,"
-echo "                                                 #  com trava anticatastrofe)"
+echo "       node \"$DEST/agent.js\" --auto --save       # autônomo (com trava anticatástrofe)"

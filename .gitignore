@@ -13,3 +13,11 @@ node_modules/
 .ponte-seq
 .ponte-estado.json
 .ponte-estado.json.tmp
+
+# runtime do agente (baixa no boot; nunca versionar)
+agente/SKILL.md
+agente/relatorio-ponte.txt
+agente/relatorio-ponte-*.txt
+agente/agent.js.bak
+ponte-log.jsonl*
+ponte.config.json

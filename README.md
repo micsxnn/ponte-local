@@ -167,7 +167,7 @@ A referência completa, com argumentos exatos, está na
 ponte-local/
 ├── SKILL.md               ← entrada para IAs: instale e opere (comece aqui)
 ├── agente/
-│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.8.0)
+│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.11.0)
 │   ├── LEIA-ME.md         ← manual do agente no PC do usuário
 │   ├── rodar.sh           ← religa lendo ponte.config.json (Linux)
 │   ├── atualizar.sh       ← baixa a versão nova do agente (Linux)

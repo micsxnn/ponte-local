@@ -5,7 +5,7 @@ A VM reseta e perde o projeto Next.js inteiro. Este guia reconstrói **só a par
 ## 1. Criar o projeto Next.js
 
 ```bash
-npx create-next-app@latest ponte-relay --typescript --app --no-eslint --no-tailwind --no-src-dir --import-alias "@/*"
+npx create-next-app@latest ponte-relay --typescript --app --no-eslint --src-dir --import-alias "@/*"
 cd ponte-relay
 ```
 
@@ -37,7 +37,12 @@ npm run dev        # porta 3000
 ```
 
 A URL pública de preview muda a cada rebuild. Confira o link atual na
-plataforma que hospeda o relay e valide com `curl http://127.0.0.1:3000/api/ponte/status`.
+plataforma que hospeda o relay e valide com:
+
+```bash
+curl -s http://127.0.0.1:3000/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"
+# sem o header a resposta é 401 — isso é o correto (status é privado)
+```
 
 ## 4. Reconectar o agente
 
@@ -61,6 +66,7 @@ de uma máquina nunca atravessa para a outra.
 PONTE_TOKEN_NETBOOK=$(openssl rand -hex 12)   # agente da máquina 1 (entregue no chat privado)
 PONTE_TOKEN_WINDOWS=$(openssl rand -hex 16)   # agente da máquina 2 (entregue no chat privado)
 PONTE_TOKEN_TEST=$(openssl rand -hex 12)      # opcional — agentes de teste na VM
+PONTE_TOKEN_CELULAR=$(openssl rand -hex 12)   # opcional — lane do celular (Termux)
 PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)     # operador/IA (nunca sai da VM)
 ```
 
@@ -68,14 +74,16 @@ PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)     # operador/IA (nunca sai da VM)
 - O operador lê `PONTE_ADMIN_TOKEN` (e `PONTE_URL` se não for `http://127.0.0.1:3000`).
 - No PC, cada agente recebe o token DA SUA máquina na instalação
   (`--token ... --save`, fica em `~/ponte-agent/ponte.config.json`).
-- `POST /cmd` recebe `"lane":"netbook"|"windows"|"test"`; sem lane o relay
+- `POST /cmd` recebe `"lane":"netbook"|"windows"|"test"|"celular"`; sem lane o relay
   1.3.x usa "netbook" (transição do token único) e depois passa a exigir.
 - `/status` mostra uma entrada por lane (conectado, specs, pendências).
 
 Trocou um token? Atualize o relay e religue o agente com `--token NOVO --save`.
 
 Estado da fila/resultados vive em `globalThis` (`__ponteState2`) e, desde o
-relay **v1.2.0**, persiste em `.ponte-estado.json` na raiz do projeto:
+relay **v1.2.0**, persiste em `.ponte-estado.json` ao lado do projeto
+(`PONTE_DATA_DIR` sobrepõe — v1.4.0; falha de escrita agora GRITA no log em
+vez de engolir):
 pendentes (<24h), últimos 400 resultados, specs/lastSeen **por lane** (desde
 v1.3.0; snapshots v1 antigos migram sozinhos na carga) — sobrevivem a restart
 do Next (edição de arquivo, rebuild, queda do processo).

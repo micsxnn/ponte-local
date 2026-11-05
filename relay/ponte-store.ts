@@ -23,9 +23,11 @@
 // - Janela de "conectado" de 45 s (soluços de rede não apagam a luz).
 
 import fs from "fs";
+import path from "path";
+import { createHash, timingSafeEqual } from "crypto";
 
-export type LaneId = "netbook" | "windows" | "test";
-export const LANE_IDS: LaneId[] = ["netbook", "windows", "test"];
+export type LaneId = "netbook" | "windows" | "test" | "celular";
+export const LANE_IDS: LaneId[] = ["netbook", "windows", "test", "celular"];
 
 export interface PonteCommand {
   id: number;
@@ -54,6 +56,7 @@ interface PonteState {
   seq: number;
   commands: PonteCommand[]; // histórico (agente usa cursor; pendentes protegidos)
   results: PonteResult[]; // histórico (capado)
+  respondidos: number[]; // ids com resultado confirmado — sobrevive à poda dos 400 resultados
   claimed: Map<number, number>; // id do comando → timestamp do claim (entrega exclusiva)
   lanes: Record<LaneId, LaneState>;
   startedAt: number;
@@ -93,19 +96,33 @@ export const LANE_TOKENS: Record<LaneId, string[]> = {
   netbook: tokensEnv("PONTE_TOKEN_NETBOOK", "PONTE_AGENT_TOKEN"),
   windows: tokensEnv("PONTE_TOKEN_WINDOWS"),
   test: tokensEnv("PONTE_TOKEN_TEST", "PONTE_TEST_TOKEN"),
+  celular: tokensEnv("PONTE_TOKEN_CELULAR"),
 };
 export const ADMIN_TOKEN = tokensEnv("PONTE_ADMIN_TOKEN")[0] ?? "";
 
-export const PONTE_VERSION = "1.3.1";
+export const PONTE_VERSION = "1.4.0";
 export const CONNECTED_WINDOW_MS = 45_000;
 
-// Sequência persistida em disco: ids de comando NUNCA voltam atrás,
-// mesmo se o dev server reiniciar (evita agente perder comandos por cursor velho).
-const SEQ_FILE = "/home/z/my-project/.ponte-seq";
+// Arquivos de estado ao lado do projeto (funciona em qualquer deploy):
+// PONTE_DATA_DIR sobrepõe (containers/VPS com volume próprio).
+// Antes eram caminhos absolutos da máquina do autor — em qualquer outro
+// lugar a escrita falhava EACCES e o catch {} escondia o prejuízo.
+const DATA_DIR = process.env.PONTE_DATA_DIR || process.cwd();
+const SEQ_FILE = path.join(DATA_DIR, ".ponte-seq");
 
 // Snapshot completo do relay (fila + histórico + specs por lane) — o arquivo
 // que mata a amnésia: o Next reinicia, o relay reencontra o estado aqui.
-const SNAPSHOT_FILE = "/home/z/my-project/.ponte-estado.json";
+const SNAPSHOT_FILE = path.join(DATA_DIR, ".ponte-estado.json");
+let avisouFalhaPersist = false;
+function avisaFalhaPersist(onde: string, e: unknown): void {
+  if (avisouFalhaPersist) return;
+  avisouFalhaPersist = true;
+  console.warn(
+    "[ponte] falha ao persistir estado (" + onde + "):",
+    e instanceof Error ? e.message : e,
+    "— o relay funciona, mas NÃO sobrevive a restart. Ajuste PONTE_DATA_DIR/permissões."
+  );
+}
 
 function loadSeq(): number {
   try {
@@ -118,7 +135,9 @@ function loadSeq(): number {
 function saveSeq(n: number): void {
   try {
     fs.writeFileSync(SEQ_FILE, String(n));
-  } catch {}
+  } catch (e) {
+    avisaFalhaPersist("seq", e);
+  }
 }
 
 interface Snapshot {
@@ -127,6 +146,7 @@ interface Snapshot {
   seq: number;
   commands: PonteCommand[]; // só pendentes <24h — o resto é histórico morto
   results: PonteResult[];
+  respondidos: number[]; // ids JÁ respondidos (sobrevive à poda do histórico)
   lanes: Record<LaneId, LaneState>;
   totalCommands: number;
   totalResults: number;
@@ -137,6 +157,7 @@ function lanesPadrao(): Record<LaneId, LaneState> {
     netbook: { lastSeen: 0, agentInfo: null },
     windows: { lastSeen: 0, agentInfo: null },
     test: { lastSeen: 0, agentInfo: null },
+    celular: { lastSeen: 0, agentInfo: null },
   };
 }
 
@@ -181,7 +202,10 @@ function loadSnapshot(): Snapshot | null {
         if (l[id] && typeof l[id] === "object") {
           lanes[id] = {
             lastSeen: typeof l[id].lastSeen === "number" ? l[id].lastSeen : 0,
-            agentInfo: l[id].agentInfo && typeof l[id].agentInfo === "object" ? l[id].agentInfo : null,
+            agentInfo:
+              l[id].agentInfo && typeof l[id].agentInfo === "object"
+                ? (l[id].agentInfo as Record<string, unknown>)
+                : null,
           };
         }
       }
@@ -189,7 +213,10 @@ function loadSnapshot(): Snapshot | null {
       // v1 → v2: slot único virava lane netbook
       lanes.netbook = {
         lastSeen: typeof raw.lastSeen === "number" ? raw.lastSeen : 0,
-        agentInfo: raw.agentInfo && typeof raw.agentInfo === "object" ? raw.agentInfo : null,
+        agentInfo:
+          raw.agentInfo && typeof raw.agentInfo === "object"
+            ? (raw.agentInfo as Record<string, unknown>)
+            : null,
       };
     }
 
@@ -199,6 +226,9 @@ function loadSnapshot(): Snapshot | null {
       seq: typeof raw.seq === "number" ? raw.seq : 0,
       commands,
       results,
+      respondidos: Array.isArray(raw.respondidos)
+        ? (raw.respondidos as unknown[]).filter((x): x is number => typeof x === "number").slice(-2000)
+        : [],
       lanes,
       totalCommands: typeof raw.totalCommands === "number" ? raw.totalCommands : 0,
       totalResults: typeof raw.totalResults === "number" ? raw.totalResults : 0,
@@ -224,7 +254,7 @@ export function saveSnapshot(s: PonteState): void {
   try {
     const agora = Date.now();
     const pendentes = s.commands.filter(
-      (c) => !s.results.some((r) => r.id === c.id) && agora - c.ts <= PENDING_MAX_AGE_MS
+      (c) => !temResultado(s, c.id) && agora - c.ts <= PENDING_MAX_AGE_MS
     );
     const snap: Snapshot = {
       v: 2,
@@ -232,6 +262,7 @@ export function saveSnapshot(s: PonteState): void {
       seq: s.seq,
       commands: pendentes,
       results: s.results.slice(-MAX_RESULTS).map(resultadoParaSnapshot),
+      respondidos: s.respondidos.slice(-2000),
       lanes: s.lanes,
       totalCommands: s.totalCommands,
       totalResults: s.totalResults,
@@ -239,7 +270,9 @@ export function saveSnapshot(s: PonteState): void {
     const tmp = SNAPSHOT_FILE + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify(snap));
     fs.renameSync(tmp, SNAPSHOT_FILE); // atômico: nunca deixa arquivo pela metade
-  } catch {}
+  } catch (e) {
+    avisaFalhaPersist("snapshot", e);
+  }
 }
 
 function markDirty(): void {
@@ -263,6 +296,7 @@ export function ponte(): PonteState {
       seq: Math.max(loadSeq(), snap?.seq ?? 0),
       commands: snap?.commands ?? [],
       results: snap?.results ?? [],
+      respondidos: snap?.respondidos ?? [],
       claimed: new Map(), // lease não persiste: restart = entrega liberada (é o que queríamos)
       lanes: snap?.lanes ?? lanesPadrao(),
       startedAt: Date.now(),
@@ -276,14 +310,23 @@ export function ponte(): PonteState {
   if (!s.claimed) s.claimed = new Map();
   if (!Array.isArray(s.commands)) s.commands = [];
   if (!Array.isArray(s.results)) s.results = [];
-  if (!s.lanes || !s.lanes.netbook || !s.lanes.windows || !s.lanes.test) s.lanes = lanesPadrao();
+  if (!Array.isArray(s.respondidos)) s.respondidos = [];
+  if (!s.lanes)
+    s.lanes = lanesPadrao();
+  else for (const id of LANE_IDS) if (!s.lanes[id]) s.lanes[id] = { lastSeen: 0, agentInfo: null };
   return s;
+}
+
+// Comparação em tempo constante: hash antes do timingSafeEqual para igualar
+// os comprimentos (v1.4.0 — igualdade de string pura respondia a timing)
+function tokenIgual(a: string, b: string): boolean {
+  return timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 }
 
 export function laneForAgent(token: string | null): LaneId | null {
   if (!token) return null;
   for (const id of LANE_IDS) {
-    if (LANE_TOKENS[id].includes(token)) return id;
+    if (LANE_TOKENS[id].some((t) => tokenIgual(t, token))) return id;
   }
   return null;
 }
@@ -293,11 +336,11 @@ export function isAgentAuthorized(token: string | null): boolean {
 }
 
 export function isAdminAuthorized(token: string | null): boolean {
-  return !!ADMIN_TOKEN && !!token && token === ADMIN_TOKEN;
+  return !!ADMIN_TOKEN && !!token && tokenIgual(ADMIN_TOKEN, token);
 }
 
 function temResultado(s: PonteState, id: number): boolean {
-  return s.results.some((r) => r.id === id);
+  return s.results.some((r) => r.id === id) || s.respondidos.includes(id);
 }
 
 export function addCommand(
@@ -320,15 +363,13 @@ export function addCommand(
   return cmd;
 }
 
-// Casa limpa: pendentes vencidos (>24h) saem; se o histórico estourar,
-// corta do FIM velho dos RESULTADOS (pendentes nunca são cortados).
+// Casa limpa: pendentes vencidos (>24h) morrem; concluídos saem por idade
+// (o id fica em respondidos — não volta a ser "pendente" se o resultado
+// histórico for podado) e, se o histórico estourar MAX_COMMANDS, o corte
+// é do FIM velho dos RESPONDIDOS (pendentes nunca são cortados por espaço).
 function podarCommands(s: PonteState): void {
   const agora = Date.now();
-  if (s.commands.some((c) => agora - c.ts > PENDING_MAX_AGE_MS)) {
-    s.commands = s.commands.filter(
-      (c) => !((agora - c.ts > PENDING_MAX_AGE_MS && !temResultado(s, c.id)) || agora - c.ts > PENDING_MAX_AGE_MS)
-    );
-  }
+  s.commands = s.commands.filter((c) => agora - c.ts <= PENDING_MAX_AGE_MS);
   if (s.commands.length > MAX_COMMANDS) {
     const pendentes = s.commands.filter((c) => !temResultado(s, c.id));
     const espaco = Math.max(0, MAX_COMMANDS - pendentes.length);
@@ -384,6 +425,10 @@ export function pushResult(r: PonteResult): void {
   s.totalResults += 1;
   s.results.push(r);
   if (s.results.length > MAX_RESULTS) s.results = s.results.slice(-MAX_RESULTS);
+  if (!s.respondidos.includes(r.id)) {
+    s.respondidos.push(r.id);
+    if (s.respondidos.length > 2000) s.respondidos = s.respondidos.slice(-2000);
+  }
   s.claimed.delete(r.id);
   saveSnapshot(s); // resultado registrado em disco: comando não é reexecutado após restart
 }

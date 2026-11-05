@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.9.0 (Windows + Linux)
+ * Ponte Local — Agente v1.11.0 (Windows + Linux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. Sem shell, sem execução de programas, sem rede além
  * do próprio relay.
@@ -57,6 +57,18 @@
  *    moldura). Janela estreita = caixa estreita; só o texto quebra dentro.
  *    TTY sem "columns" usa getWindowSize(); piso 20 contra degenerescência;
  *    cap 100 em ultra-wide; pipe/arquivo segue no padrão 80.
+ *
+ *  - Segurança v1.11.0 (audit com subagentes + skills security-review/
+ *    security-and-hardening): trava anticatástrofe cobre && no meio do
+ *    comando, flags com hífen interno (--no-preserve-root), find -delete,
+ *    xargs destrutivo, tee/redirect para /dev/*, curl|bash, chmod/chown -R
+ *    em pasta do sistema e rm com $VAR/".."; escopo valida realpath
+ *    (symlink/junction não fura mais a home); credenciais (.env, .npmrc,
+ *    .git-credentials, config e log do agente) bloqueadas para leitura
+ *    remota; resultado do comando reenvia com retry e o cursor só avança
+ *    com confirmação (rede caiu ≠ comando perdido); overwrite:true recusa
+ *    pasta; timeout mata o GRUPO de processos; token aceito via env
+ *    PONTE_AGENT_TOKEN; config com permissão 0600.
  */
 "use strict";
 
@@ -67,7 +79,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.10.5";
+const VERSION = "1.11.0";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -106,9 +118,36 @@ function sleep(ms) {
 }
 function audit(entry) {
   try {
+    // rotação simples (v1.11.0): log > 20 MB vira .old — o append não pode
+    // crescer sem teto; undo_last só lê a cauda de qualquer forma
+    try {
+      if (fs.statSync(LOG_FILE).size > 20 * 1024 * 1024)
+        fs.renameSync(LOG_FILE, LOG_FILE + ".old");
+    } catch (_) {}
     fs.appendFileSync(LOG_FILE, JSON.stringify(Object.assign({ ts: stamp() }, entry)) + "\n");
   } catch (_) {
     /* o log nunca deve derrubar o agente */
+  }
+}
+
+// cauda do log p/ undo_last: lê no máximo 512 KB do fim (v1.11.0 — antes o
+// undo carregava o log INTEIRO na memória; com meses de uso isso estourava)
+function caudaLog(maxBytes) {
+  const teto = maxBytes || 512 * 1024;
+  try {
+    const st = fs.statSync(LOG_FILE);
+    const size = Math.min(st.size, teto);
+    const buf = Buffer.alloc(size);
+    const fd = fs.openSync(LOG_FILE, "r");
+    try {
+      fs.readSync(fd, buf, 0, size, st.size - size);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const linhas = buf.toString("utf8").split("\n").filter(Boolean);
+    return st.size > teto ? linhas.slice(1) : linhas; // 1ª linha pode estar cortada
+  } catch (_) {
+    return [];
   }
 }
 
@@ -149,7 +188,7 @@ function larguraTerminal() {
   // TTY que ainda não preencheu "columns": pergunta a janela direto
   if (!c && out && out.isTTY && typeof out.getWindowSize === "function") {
     try {
-      c = Number(out.getWindowSize()[1]) || 0;
+      c = Number(out.getWindowSize()[0]) || 0; // [0]=colunas ([1]=linhas)
     } catch (_) {
       c = 0;
     }
@@ -419,6 +458,8 @@ function loadConfig(cli) {
   } catch (_) {}
   if (cli.server) c.server = cli.server;
   if (cli.token) c.token = cli.token;
+  if (!c.token && process.env.PONTE_AGENT_TOKEN)
+    c.token = String(process.env.PONTE_AGENT_TOKEN); // token via env: não aparece no ps
   if (cli.home) c.home = cli.home;
   if (!c.server)
     fail(
@@ -431,6 +472,7 @@ function loadConfig(cli) {
   if (!/^https?:\/\//i.test(c.server)) c.server = "https://" + c.server;
   c.server = String(c.server).replace(/\/+$/, "");
   c.home = c.home ? path.resolve(String(c.home)) : os.homedir();
+  try { fs.chmodSync(CONFIG_FILE, 0o600); } catch (_) {} // config guarda token: só o dono lê (v1.11.0)
   // Modo supervisionado: run_command só funciona se ativado explicitamente.
   if (cli["allow-run"]) c.run = true;
   // Modo autônomo (--auto): run_command SEM confirmação (implica --allow-run).
@@ -460,7 +502,8 @@ function saveConfig(c) {
         godModeDeclined: !!c.godModeDeclined,
       },
       null,
-      2
+      2,
+      { encoding: "utf8", mode: 0o600 } // token em texto plano: só o dono lê (v1.11.0)
     )
   );
 }
@@ -476,13 +519,20 @@ function apiCall(method, urlPath, body) {
     }
     const lib = u.protocol === "https:" ? https : http;
     const payload = body ? Buffer.from(JSON.stringify(body), "utf8") : null;
+    // POST grande (read_binary ~10 MB) não cabe em 15 s em link lento:
+    // 15 s + 30 s por MB acima de 512 KB (v1.11.0 — resultado não se perde
+    // nem o relay re-entrega o comando por timeout do agente)
+    const timeoutMs =
+      payload && payload.length > 512 * 1024
+        ? REQUEST_TIMEOUT_MS + Math.ceil(payload.length / (1024 * 1024)) * 30000
+        : REQUEST_TIMEOUT_MS;
     const req = lib.request(
       {
         hostname: u.hostname,
         port: u.port || (u.protocol === "https:" ? 443 : 80),
         path: u.pathname + u.search,
         method,
-        timeout: REQUEST_TIMEOUT_MS,
+        timeout: timeoutMs,
         headers: Object.assign(
           { "x-ponte-token": cfg.token },
           payload
@@ -520,20 +570,59 @@ function apiCall(method, urlPath, body) {
 // ---------------------------------------------------------------- escopo
 const BLOCKED_DIRS = new Set([
   ".ssh", ".gnupg", ".config", ".password-store", ".aws", ".kube",
-  ".ponte-agent", "ponte-agent",
+  ".ponte-agent", "ponte-agent", ".docker", ".mozilla", "keyrings",
 ]);
+// arquivos que carregam credencial direto — leitura remota NUNCA (v1.11.0)
+const BLOCKED_FILES = new Set([
+  ".env", ".npmrc", ".netrc", ".git-credentials", ".wgetrc", ".pypirc", ".htpasswd",
+]);
+// config e log do agente levam token/histórico: bloqueados por CAMINHO REAL,
+// não por nome de pasta (antes bastava instalar fora de ~/ponte-agent)
+const CAMINHOS_PROTEGIDOS = new Set([path.resolve(CONFIG_FILE), path.resolve(LOG_FILE)]);
 
 function assertAllowed(p) {
-  const rp = path.resolve(String(p));
+  let s = String(p);
+  // ~ e %USERPROFILE% viram a home de verdade (v1.11.0 — antes "~/x" era
+  // resolvido contra o cwd e variava conforme onde o agente nasceu)
+  s = s.replace(/^~(?=\/|\\|$)/, cfg.home).replace(/^%USERPROFILE%(?=\/|\\|$)/i, cfg.home);
+  let rp = path.resolve(s);
   const home = path.resolve(cfg.home);
-  if (rp !== home && !rp.startsWith(home + path.sep)) {
+  const foraDoEscopo = (caminho) =>
+    caminho !== home && !caminho.startsWith(home + path.sep);
+  if (foraDoEscopo(rp)) {
     throw new Error("Fora do escopo: só opero dentro de " + home);
+  }
+  // realpath (v1.11.0): symlink/junction dentro da home apontando pra fora
+  // não fura mais o escopo — valida o caminho REAL, não só o lexical
+  try {
+    const real = fs.realpathSync(rp);
+    if (real !== rp) {
+      if (foraDoEscopo(real))
+        throw new Error("Caminho real fora do escopo (symlink/junction): " + real);
+      rp = real;
+    }
+  } catch (e) {
+    if (e.message && e.message.indexOf("escopo") !== -1) throw e;
+    // caminho ainda não existe (write): valida o ancestral existente mais próximo
+    let anc = path.dirname(rp);
+    for (let i = 0; i < 40 && anc !== path.dirname(anc); i++) {
+      try {
+        const real = fs.realpathSync(anc);
+        if (foraDoEscopo(real))
+          throw new Error("Ancestral do caminho é symlink para fora do escopo: " + real);
+        break;
+      } catch (e2) {
+        if (e2.message && e2.message.indexOf("escopo") !== -1) throw e2;
+        anc = path.dirname(anc);
+      }
+    }
   }
   const rel = path.relative(home, rp);
   const parts = rel.split(path.sep).filter(Boolean);
-  for (const part of parts) {
-    if (BLOCKED_DIRS.has(part)) throw new Error("Pasta protegida no caminho: " + part);
-  }
+  if (parts.some((part) => BLOCKED_DIRS.has(part)))
+    throw new Error("Pasta protegida no caminho");
+  if (BLOCKED_FILES.has(path.basename(rp)) || CAMINHOS_PROTEGIDOS.has(rp))
+    throw new Error("Arquivo protegido (credenciais/config do agente) — acesso remoto bloqueado");
   return rp;
 }
 
@@ -851,15 +940,46 @@ function dangerCheck(cmdline) {
     return "shred em dispositivo";
   if (/(^|[^a-z0-9])>\s*\/dev\/(sd|nvme|mmcblk|hd|vd)/i.test(cmdline))
     return "escrita direta em dispositivo";
-  // rm recursivo em alvo de sistema inteiro (divide por ; | && e nova linha)
-  const segmentos = cmdline.split(/\n|;|\|\||\|/);
+  // destruição em massa além do rm (v1.11.0): find -delete, xargs destrutivo,
+  // tee/redirect para dispositivo, script da internet direto no shell,
+  // chmod/chown -R em pasta do sistema
+  if (/\bfind\b[^|;&]*\s-delete\b/i.test(cmdline)) return "find -delete (remoção em massa)";
+  if (/\bxargs\b\s+(?:-0\s+)?(?:sudo\s+)?(rm|dd|mkfs|shred)\b/i.test(cmdline))
+    return "xargs com comando destrutivo";
+  if (/(\||^)\s*(sudo\s+)?tee\s+[^|;&]*\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
+    return "tee escrevendo em dispositivo";
+  if (/(^|[^a-z0-9])>>?\s*\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
+    return "escrita direta em dispositivo";
+  if (/\bcp\b[^|;&]*\s\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
+    return "cp escrevendo em dispositivo";
+  if (/\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/i.test(cmdline))
+    return "script da internet executado direto no shell";
+  if (/\b(chmod|chown)\b\s+(-R|--recursive)\b[^|;&]*\s+\/(etc|usr|boot|var|lib|bin|sbin|opt)\b/i.test(cmdline))
+    return "chmod/chown recursivo em pasta do sistema";
+
+  // rm recursivo em alvo de sistema inteiro — divide por ; | && || e nova
+  // linha (&& entrou na v1.11.0: "echo oi && rm -rf /" burlava o split)
+  const ehRecursivo = (f) => {
+    if (/^--/.test(f)) return /^--recursive($|[=\s])/i.test(f);
+    if (/^-/.test(f)) return /r/i.test(f.slice(1));
+    return false;
+  };
+  const segmentos = cmdline.split(/\n|;|&&|\|\||\|/);
   for (const seg of segmentos) {
-    const m = seg.trim().match(/^(?:sudo\s+)?rm\s+((?:-{1,2}[a-zA-Z]+\s+)*)(.*)$/);
+    const m = seg.trim().match(/^(?:sudo\s+)?rm\s+(.+)$/);
     if (!m) continue;
-    if (!/-[a-z]*r/i.test(m[1])) continue; // só interessa rm recursivo
-    for (const alvo of m[2].trim().split(/\s+/)) {
-      if (!alvo || alvo.startsWith("-")) continue;
-      if (ALVO_SISTEMA.test(alvo.replace(/["']/g, "")))
+    const toks = m[1].split(/\s+/);
+    const flags = toks.filter((t) => /^-{1,2}\S/.test(t));
+    const alvos = toks.filter((t) => t && !/^-{1,2}/.test(t));
+    if (!flags.some(ehRecursivo)) continue; // só interessa rm recursivo
+    for (const alvo of alvos) {
+      const limpo = alvo.replace(/["']/g, "");
+      if (!limpo || limpo.startsWith("-")) continue;
+      if (/\$/.test(limpo))
+        return "rm recursivo com variável não resolvida (" + alvo + ") — use caminho literal";
+      if (/(^|\/)\.\.?(\/|$)/.test(limpo))
+        return "rm recursivo com '.'/'..' no alvo (" + alvo + ")";
+      if (ALVO_SISTEMA.test(limpo))
         return "rm recursivo em alvo de sistema (" + alvo + ")";
     }
   }
@@ -888,7 +1008,7 @@ function dangerCheck(cmdline) {
     }
     return null;
   };
-  for (const seg of cmdline.split(/\n|;|\|\||\|/)) {
+  for (const seg of cmdline.split(/\n|;|&&|\|\||\|/)) {
     const s = seg.trim();
     const mRd = s.match(/^(?:rd|rmdir)\s+((?:\/[a-z]+\s+)*)(.+)$/i);
     if (mRd && /\/s/i.test(mRd[1])) {
@@ -922,6 +1042,7 @@ const BASH = [
 
 function executarComando(cmdline, cwd, timeoutMin) {
   const t0 = Date.now();
+  const win = process.platform === "win32";
   return new Promise((resolve) => {
     const fim = (err, stdout, stderr) => {
       resolve({
@@ -938,16 +1059,35 @@ function executarComando(cmdline, cwd, timeoutMin) {
       maxBuffer: 8 * 1024 * 1024,
       encoding: "utf8",
       windowsHide: true,
+      detached: !win, // líder de grupo no POSIX: dá pra matar os NETOS também
     };
-    if (process.platform === "win32") {
+    let child = null;
+    // mata o GRUPO inteiro no timeout (v1.11.0 — o kill padrão do exec só
+    // acerta o shell; "servidor &" e netos ficavam órfãos rodando)
+    const matarGrupo = () => {
+      try {
+        if (win && child && child.pid) {
+          execFile("taskkill", ["/T", "/F", "/PID", String(child.pid)], () => {});
+        } else if (child && child.pid) {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch (_) {}
+    };
+    if (win) {
       // Windows: exec usa o ComSpec (cmd.exe), exatamente como o Node faz
       // nativamente. stdin não pode ser "inherit" em exec — e o cmd não
       // precisa dele (prompt interativo de sudo é coisa de Linux).
-      exec(cmdline, opts, fim);
+      child = exec(cmdline, opts, fim);
     } else {
       // Linux/macOS/Termux: bash explícito (resolvido pelo BASH), stdin
       // herdado (sudo -S precisa).
-      execFile(BASH, ["-c", cmdline], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
+      child = execFile(BASH, ["-c", cmdline], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
+    }
+    if (child && typeof child.on === "function") {
+      child.on("spawn", () => {
+        const t = setTimeout(matarGrupo, timeoutMin * 60000 + 500);
+        if (t.unref) t.unref();
+      });
     }
   });
 }
@@ -1057,15 +1197,35 @@ function trashMove(rp) {
   fs.mkdirSync(t.files, { recursive: true });
   fs.mkdirSync(t.info, { recursive: true });
   const target = uniquePath(path.join(t.files, path.basename(rp)));
-  fs.renameSync(rp, target);
-  const trashName = path.basename(target);
+  const infoFile = path.join(t.info, path.basename(target) + ".trashinfo");
+  // .trashinfo ANTES do move (v1.11.0): crash no meio nunca deixa item
+  // irrecuperável na lixeira; se o move falhar, o info sai junto
   fs.writeFileSync(
-    path.join(t.info, trashName + ".trashinfo"),
+    infoFile,
     "[Trash Info]\nPath=" + encodeURI(rp) + "\nDeletionDate=" +
       new Date().toISOString().replace(/\..+/, "") + "\n",
     "utf8"
   );
-  return { trashName, trashPath: target };
+  try {
+    fs.renameSync(rp, target);
+  } catch (e) {
+    try { fs.unlinkSync(infoFile); } catch (_) {}
+    if (e.code === "EXDEV" && fs.statSync(rp).isFile()) {
+      // outro volume: copia+apaga (v1.11.0 — rename não atravessa mount)
+      try {
+        fs.copyFileSync(rp, target);
+        fs.unlinkSync(rp);
+        fs.writeFileSync(infoFile, "[Trash Info]\nPath=" + encodeURI(rp) + "\nDeletionDate=" +
+          new Date().toISOString().replace(/\..+/, "") + "\n", "utf8");
+      } catch (e2) {
+        try { fs.unlinkSync(target); } catch (_) {}
+        throw e2;
+      }
+    } else {
+      throw e;
+    }
+  }
+  return { trashName: path.basename(target), trashPath: target };
 }
 
 function restoreFromTrash(trashName) {
@@ -1441,8 +1601,16 @@ const ACTIONS = {
     const content = String(args.content == null ? "" : args.content);
     if (content.length > 1024 * 1024) throw new Error("Conteúdo maior que 1 MB");
     const existed = fs.existsSync(rp);
-    if (existed && !args.overwrite)
-      throw new Error("Já existe. Se quiser substituir, mande overwrite:true (o antigo vai pra lixeira)");
+    if (existed) {
+      // overwrite:true numa PASTA mandaria a subárvore inteira pra lixeira
+      // e criaria um arquivo no lugar — recusar sempre (v1.11.0)
+      let st = null;
+      try { st = fs.statSync(rp); } catch (_) {}
+      if (st && st.isDirectory())
+        throw new Error("O caminho é uma PASTA — write_text cria arquivo. Escolha outro nome ou remova a pasta manualmente.");
+      if (!args.overwrite)
+        throw new Error("Já existe. Se quiser substituir, mande overwrite:true (o antigo vai pra lixeira)");
+    }
     fs.mkdirSync(path.dirname(rp), { recursive: true });
     if (existed) {
       const { trashName } = trashMove(rp);
@@ -1598,8 +1766,8 @@ const ACTIONS = {
   },
 
   undo_last: async () => {
-    if (!fs.existsSync(LOG_FILE)) throw new Error("Log vazio — nada para desfazer");
-    const lines = fs.readFileSync(LOG_FILE, "utf8").trim().split("\n").reverse();
+    const lines = caudaLog().reverse(); // só a cauda do log (v1.11.0)
+    if (!lines.length) throw new Error("Log vazio — nada para desfazer");
     for (const line of lines) {
       let entry;
       try {
@@ -1610,7 +1778,13 @@ const ACTIONS = {
       const u = entry.undo;
       if (!u) continue;
       if (u.kind === "move") {
-        if (!fs.existsSync(u.to)) throw new Error("Item não está mais em " + u.to);
+        // entrada quebrada não trava o undo pra sempre: pula e tenta a
+        // anterior (v1.11.0 — antes lançava erro e TODA chamada futura
+        // falhava no mesmo lugar)
+        if (!fs.existsSync(u.to)) {
+          audit({ action: "undo", erro: "entrada pulada (alvo sumiu): " + entry.resumo });
+          continue;
+        }
         const dest = moveItem(u.to, u.from);
         audit({ action: "undo", resumo: "reverteu: " + entry.resumo });
         return { revertido: entry.action, para: dest };
@@ -1903,8 +2077,16 @@ const ACTIONS = {
     if (buf.length > 8 * 1024 * 1024)
       throw new Error("Maior que 8 MB — a ponte não é pra transferência pesada");
     const existed = fs.existsSync(rp);
-    if (existed && !args.overwrite)
-      throw new Error("Já existe. Sobrescrever exige overwrite:true (o antigo vai pra lixeira)");
+    if (existed) {
+      // overwrite:true numa PASTA mandaria a subárvore inteira pra lixeira
+      // e criaria um binário no lugar — recusar sempre (v1.11.0)
+      let st = null;
+      try { st = fs.statSync(rp); } catch (_) {}
+      if (st && st.isDirectory())
+        throw new Error("O caminho é uma PASTA — write_binary cria arquivo. Escolha outro nome ou remova a pasta manualmente.");
+      if (!args.overwrite)
+        throw new Error("Já existe. Sobrescrever exige overwrite:true (o antigo vai pra lixeira)");
+    }
     fs.mkdirSync(path.dirname(rp), { recursive: true });
     if (existed) {
       const { trashName } = trashMove(rp);
@@ -2258,11 +2440,12 @@ function fecharTarefa(resumo, automatico) {
   if (tinhaNaTela) {
     // o kill emitido lá em cima está correndo: abrir antes dele terminar
     // faria o pkill/Stop-Process matar o open recém-nascido
-    const quandoPuderAbrir = () => {
-      if (matancaEditor > 0) return setTimeout(quandoPuderAbrir, 50);
+    const quandoPuderAbrir = (t) => {
+      if (t > 600) return abrirNovo(); // teto ~30 s: o pkill preso não segura o relatório
+      if (matancaEditor > 0) return setTimeout(quandoPuderAbrir, 50, t + 1);
       abrirNovo();
     };
-    quandoPuderAbrir();
+    quandoPuderAbrir(0);
   } else {
     abrirNovo();
   }
@@ -2390,16 +2573,22 @@ async function processCommand(c) {
     }
   }
   if (c.action !== "ping" && c.action !== "task_done") {
-    garantirTarefaPara(); // cria a tarefa ou fecha a anterior (relatório obrigatório)
-    lote.comandos.push({
-      id: c.id,
-      action: c.action,
-      ok: !!payload.ok,
-      erro: payload.ok ? null : String(payload.error || "").slice(0, 160),
-      ms: Date.now() - t0,
-      ts: Date.now(),
-    });
-    lote.ultimaAtividade = Date.now();
+    // controle de tarefa nunca pode derrubar o comando nem o POST do
+    // resultado (v1.11.0 — exceção aqui apagava o resultado do comando)
+    try {
+      garantirTarefaPara(); // cria a tarefa ou fecha a anterior (relatório obrigatório)
+      lote.comandos.push({
+        id: c.id,
+        action: c.action,
+        ok: !!payload.ok,
+        erro: payload.ok ? null : String(payload.error || "").slice(0, 160),
+        ms: Date.now() - t0,
+        ts: Date.now(),
+      });
+      lote.ultimaAtividade = Date.now();
+    } catch (e) {
+      audit({ action: c.action, erro: "controle de tarefa falhou (não afeta o resultado): " + e.message });
+    }
   }
   let json = JSON.stringify(payload);
   if (json.length > 10500000) {
@@ -2409,10 +2598,45 @@ async function processCommand(c) {
       error: "Resultado grande demais (" + Math.round(json.length / 1000) + " KB) — refine o comando",
     };
   }
-  await apiCall("POST", "/api/ponte/result", payload);
+  // o resultado TEM que chegar: 3 tentativas com backoff (v1.11.0 — rede
+  // caiu não apaga o resultado nem descarta o resto do lote)
+  let entregue = false;
+  let ultimoErro = null;
+  let recusaDefinitiva = null;
+  for (let tent = 0; tent < 3 && !entregue; tent++) {
+    try {
+      const resPost = await apiCall("POST", "/api/ponte/result", payload);
+      entregue = true;
+      // recusa DEFINITIVA do relay (403/404 = comando de outra lane ou
+      // desconhecido): re-entrega nunca vai resolver — segue o lote (v1.11.0)
+      if (resPost && resPost.ok === false) {
+        recusaDefinitiva = resPost.error || "recusado";
+        log("Relay recusou o resultado do #" + c.id + " (" + recusaDefinitiva + ") — seguindo.");
+      }
+    } catch (e) {
+      ultimoErro = e;
+      if (tent < 2) await sleep(2000 * (tent + 1));
+    }
+  }
+  if (!entregue) {
+    log("Resultado do comando #" + c.id + " NÃO chegou ao relay (3 tentativas: " + ultimoErro.message + ") — o comando voltará pela fila.");
+    audit({ action: c.action, ok: false, erro: "resultado não entregue: " + ultimoErro.message });
+    return { entregue: false, id: c.id };
+  }
   const estado = payload.ok ? "ok" : "ERRO: " + payload.error;
   log("Comando #" + c.id + " (" + c.action + ") → " + estado);
+  return { entregue: true, id: c.id };
 }
+
+// o agente é um serviço: exceção imprevista registra e CONTINUA (v1.11.0)
+process.on("uncaughtException", (e) => {
+  try { audit({ action: "uncaughtException", erro: e && e.message }); } catch (_) {}
+  log("Erro não capturado (o agente continua): " + (e && e.message));
+});
+process.on("unhandledRejection", (e) => {
+  try { audit({ action: "unhandledRejection", erro: e && (e.message || String(e)) }); } catch (_) {}
+  log("Promise rejeitada sem tratamento (o agente continua): " + ((e && e.message) || e));
+});
 
 async function main() {
   cfg = loadConfig(parseArgs(process.argv.slice(2)));
@@ -2456,13 +2680,29 @@ async function main() {
   fecharRelatorioAnterior();
   skillAutoUpdateLoop();          // baixa a SKILL.md agora e a cada 60 s
 
+  let errosSeguidos = 0;
+  let avisosToken = 0;
   while (true) {
     try {
       const q = cursor === null ? "/api/ponte/poll" : "/api/ponte/poll?cursor=" + cursor;
       const res = await apiCall("GET", q, null);
       if (!res.ok) throw new Error(res.error || "relay recusou o poll");
-      cursor = res.nextCursor != null ? res.nextCursor : cursor || 0;
-      for (const c of res.commands || []) await processCommand(c);
+      errosSeguidos = 0;
+      // processa o lote inteiro mesmo se um comando falhar; o cursor só
+      // avança até o último resultado CONFIRMADO — comando cujo resultado
+      // não chegou volta pela fila do relay em vez de sumir (v1.11.0)
+      let primeiroSemResultado = null;
+      for (const c of res.commands || []) {
+        const r = await processCommand(c);
+        if (r && r.entregue === false && primeiroSemResultado == null)
+          primeiroSemResultado = c.id;
+      }
+      cursor =
+        primeiroSemResultado != null
+          ? Math.max(0, primeiroSemResultado - 1)
+          : res.nextCursor != null
+            ? res.nextCursor
+            : cursor || 0;
       fechaRelatorioVencido(); // relatório obrigatório: não depende de comando novo (v1.10.5)
       if (!connectedOnce) {
         log("Conectado à ponte. Deixe esta janela aberta — é por aqui que eu trabalho.");
@@ -2470,11 +2710,22 @@ async function main() {
       }
       await sleep(res.pollMs || 1500);
     } catch (e) {
-      if (connectedOnce) {
-        log("Conexão caiu (" + e.message + "). Tentando de novo em 5s...");
+      try { fechaRelatorioVencido(); } catch (_) {} // relay fora do ar também não adia o relatório
+      errosSeguidos++;
+      const recusa = /token/i.test(e.message || "");
+      if (recusa) {
+        // 401 não é rede: é config errada — aviso forte, sem martelar mudo
+        if (avisosToken === 0)
+          log("[x] RELAY RECUSOU O TOKEN (" + e.message + "). Corrija a config:\n    node agent.js --server URL_DO_RELAY --token SEU_TOKEN --save");
+        else if (avisosToken % 12 === 0)
+          log("Ainda recusando o token (" + avisosToken + " tentativas) — a config continua errada.");
+        avisosToken++;
+      } else if (connectedOnce) {
+        const espera = Math.min(60, 5 * errosSeguidos);
+        log("Conexão caiu (" + e.message + "). Tentando de novo em " + espera + "s...");
         connectedOnce = false;
       }
-      await sleep(5000);
+      await sleep(Math.min(60000, 5000 * errosSeguidos));
     }
   }
 }

@@ -1,5 +1,12 @@
 import { NextRequest } from "next/server";
-import { isAgentAuthorized, laneForAgent, markSeen, pushResult, setAgentInfo } from "@/lib/ponte-store";
+import {
+  isAgentAuthorized,
+  laneForAgent,
+  markSeen,
+  ponte,
+  pushResult,
+  setAgentInfo,
+} from "@/lib/ponte-store";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +26,9 @@ export async function POST(req: NextRequest) {
     );
   }
   markSeen(lane);
-  const len = parseInt(req.headers.get("content-length") ?? "0", 10);
-  if (len > MAX_BODY) {
+  // Validação por CONTEÚDO (v1.4.0): o content-length é burlável com chunked
+  const raw = await req.text();
+  if (raw.length > MAX_BODY) {
     return Response.json({ ok: false, error: "Corpo grande demais" }, { status: 413 });
   }
   let body: {
@@ -32,12 +40,26 @@ export async function POST(req: NextRequest) {
     announce?: Record<string, unknown>;
   };
   try {
-    body = await req.json();
+    body = JSON.parse(raw);
   } catch {
     return Response.json({ ok: false, error: "JSON inválido" }, { status: 400 });
   }
-  if (typeof body.id !== "number") {
+  if (typeof body.id !== "number" || !Number.isInteger(body.id) || body.id <= 0) {
     return Response.json({ ok: false, error: "Falta o id do comando" }, { status: 400 });
+  }
+  // Resultado só vale para comando DESTA lane (v1.4.0): antes um resultado
+  // com id de comando de OUTRA máquina marcava o comando como respondido e
+  // ele nunca mais era entregue à lane dona.
+  const s = ponte();
+  const cmd = s.commands.find((c) => c.id === body.id);
+  if (cmd && cmd.lane !== lane) {
+    return Response.json({ ok: false, error: "Esse comando pertence a outra lane" }, { status: 403 });
+  }
+  if (!cmd && !s.results.some((r) => r.id === body.id) && !s.respondidos.includes(body.id)) {
+    return Response.json(
+      { ok: false, error: "Comando desconhecido nesta lane — resultado recusado" },
+      { status: 404 }
+    );
   }
   pushResult({
     id: body.id,

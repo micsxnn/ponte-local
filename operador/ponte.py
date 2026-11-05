@@ -53,8 +53,21 @@ def req(path, body=None, method=None):
             body["lane"] = LANE  # a máquina alvo — o relay separa as filas por lane
         data = json.dumps(body).encode()
         r.add_header("content-type", "application/json")
-    with urllib.request.urlopen(r, data=data, timeout=60) as resp:
-        return json.loads(resp.read().decode())
+    # erro legível em vez de traceback cru (v1.11.0): 401, relay fora, etc.
+    try:
+        with urllib.request.urlopen(r, data=data, timeout=60) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            out = json.loads(e.read().decode())
+            msg = out.get("error", str(out))
+        except Exception:
+            msg = e.reason
+        print(f"ERRO HTTP {e.code}: {msg}")
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"ERRO: relay inacessível ({e.reason}) — está rodando em {BASE}?")
+        sys.exit(1)
 
 
 def get_since():
@@ -78,7 +91,7 @@ def main():
         return 1
     if len(sys.argv) < 2:
         print("uso: ponte.py <ação> [args_json] | --status | --drain | pegar <remoto> <local> | enviar <local> <remoto>")
-        print("  lane alvo via env: PONTE_LANE=netbook|windows|test (padrão netbook)")
+        print("  lane alvo via env: PONTE_LANE=netbook|windows|test|celular (padrão netbook)")
         return 1
     if sys.argv[1] == "--status":
         print(json.dumps(req("/api/ponte/status"), ensure_ascii=False, indent=2))
