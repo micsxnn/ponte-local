@@ -3,3 +3,4 @@ __pycache__/
 .ponte-estado.json
 .ponte-seq
 .env
+ponte-log.jsonl*
