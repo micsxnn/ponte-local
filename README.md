@@ -5,9 +5,11 @@
 **Sua IA opera seu PC pelo chat. As travas de segurança rodam no seu PC.**
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
+[![Agente](https://img.shields.io/badge/agente-v1.12.0-3fb950)](agente/agent.js)
+[![Relay](https://img.shields.io/badge/relay-v1.5.2-3fb950)](relay/ponte-store.ts)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-3fb950)](https://nodejs.org)
-[![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-f59e0b)](#requisitos)
-[![Dependências do agente](https://img.shields.io/badge/depend%C3%AAncias%20do%20agente-0-3fb950)](#como-funciona)
+[![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows%20%7C%20Termux-f59e0b)](#requisitos)
+[![Dependências do agente](https://img.shields.io/badge/depend%C3%AAncias%20do%20agente-0-3fb950)](#vis%C3%A3o-geral)
 [![IA-ready](https://img.shields.io/badge/IA--ready-SKILL.md-e3b341)](SKILL.md)
 [![PRs bem-vindos](https://img.shields.io/badge/PRs-bem--vindos-f0883e)](#contribuindo)
 
@@ -20,14 +22,43 @@
 > o que pedir ao usuário, a tabela das 24 ações e as regras de segurança.
 > Comece pela Regra de Ouro #0: pergunte se o PC é Windows ou Linux.
 
-## O que é
+## Sumário
 
-`agent.js` é um agente de um arquivo só, em Node puro e sem dependências, que
-roda no seu PC e conversa com a sua IA por meio de um relay (API routes Next.js
-hospedado numa VM). A IA enfileira comandos; o agente busca, executa localmente
-e devolve o resultado. O agente só abre conexões de saída, com poll a cada
-1,5 s, então funciona atrás de NAT e de firewall doméstico: nenhuma porta
-aberta, nenhum SSH.
+1. [Visão geral](#visão-geral)
+2. [Como funciona](#como-funciona)
+3. [Destaques](#destaques)
+4. [Segurança em camadas](#segurança-em-camadas)
+5. [Os 4 modos do `run_command`](#os-4-modos-do-run_command)
+6. [Requisitos](#requisitos)
+7. [Primeiros passos](#primeiros-passos)
+8. [As 24 ações do agente](#as-24-ações-do-agente)
+9. [Estrutura do repositório](#estrutura-do-repositório)
+10. [Destaques por versão](#destaques-por-versão)
+11. [Perguntas frequentes](#perguntas-frequentes)
+12. [Aviso legal, privacidade e uso responsável](#aviso-legal-privacidade-e-uso-responsável)
+13. [Contribuindo](#contribuindo)
+14. [Segurança](#segurança)
+15. [Licença](#licença)
+
+## Visão geral
+
+**Ponte Local** liga a sua IA ao **seu** computador. Um agente de um arquivo só
+(`agent.js`, Node puro, **zero dependências**) roda no seu PC e conversa com a
+sua IA por meio de um relay — rotas de API Next.js hospedadas numa VM que
+**você** controla. A IA enfileira comandos; o agente busca, executa
+localmente e devolve o resultado.
+
+O agente só abre conexões **de saída**, com poll a cada 1,5 s. Por isso
+funciona atrás de NAT e de firewall doméstico: nenhuma porta aberta, nenhum
+SSH, nada para configurar no roteador.
+
+| Componente | Onde roda | Tecnologia | Papel |
+|------------|-----------|------------|-------|
+| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 24 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
+| **Relay** — `ponte-store.ts` + rotas | na sua VM/servidor | Next.js (API routes) | fila por máquina (lane), sequência persistida em disco, painel de status |
+| **Operador** — `ponte.py` | na sua VM/servidor | Python 3, só biblioteca padrão | CLI para injetar comandos e ler resultados pelo terminal |
+
+## Como funciona
 
 ```
 ┌──────────────────┐  poll 1,5 s     ┌──────────────────────┐  admin token  ┌────────────┐
@@ -38,45 +69,46 @@ aberta, nenhum SSH.
 └──────────────────┘                 └──────────────────────┘               └────────────┘
 ```
 
-- **Agente** (seu PC): 24 ações de arquivo e comando, escopo travado na sua
-  home, lixeira com desfazer e trava anticatástrofe dentro do próprio processo,
-  antes de executar. Desde a v1.4.0, leitura universal: `file_info` identifica
-  o formato por magic bytes (png, pdf, exe, mp4, zip) e `read_text`/
-  `read_binary` leem arquivos de qualquer tamanho em pedaços (`offset` →
-  `proximoOffset`). Desde a v1.5.1, modo deus opcional (run_command sem
-  confirmações s/N; a ativação é conversacional: a IA pergunta no chat depois
-  de conectar) e skill que se auto-atualiza: o agente baixa a SKILL.md do repo
-  no boot e a cada 60 s. Desde a v1.7.0, cada tarefa é fechada pela IA com
-  `task_done` e o agente, na hora, grava um relatório TXT e abre na tela do
-  usuário — Windows (`start`), Linux (`xdg-open`), macOS (`open`). Desde a
-  v1.8.0 o relatório mostra O QUE FOI FEITO (resumo em texto que a IA envia
-  junto — sem lista de comandos) e, quando a tarefa seguinte começa, o
-  agente fecha a janela do relatório anterior e apaga o txt. No Windows, o
-  `rodar.bat` manda a saída para arquivo e desliga o QuickEdit (clique no
-  console não congela mais o agente) e o `watchdog.bat` religa o agente
-  sozinho se ele morrer.
-- **Relay** (VM/servidor): fila com entrega exclusiva (claim/lease) e sequência
-  persistida em disco — API HTTP pura; painel mínimo de status na homepage,
-  um cartão por máquina. Desde a v1.2.0 do relay, o estado inteiro
-  persiste em `.ponte-estado.json` (reiniciar o servidor não amputa mais fila
-  nem histórico), o reconnect entrega os pendentes com menos de 24h (nada de
-  comando órfão) e a janela de "conectado" é de 45 s. Desde a v1.3.0, uma
-  **lane por máquina**: cada agente autentica com o token da SUA máquina e as
-  filas são independentes — comando de uma máquina nunca executa na outra
-  (tokens via variáveis de ambiente, nada hardcoded no código).
-- **Operador** (CLI Python na VM): `ponte.py` injeta comandos e lê resultados
-  pelo terminal, com binários em base64 (`enviar`/`pegar`).
+1. A IA publica o comando na **lane** da máquina — cada PC tem token e fila
+   próprios; comando de uma máquina nunca executa na outra.
+2. O agente, que faz poll a cada 1,5 s, recebe o comando em segundos.
+3. O agente valida **localmente**, antes de executar: escopo travado na sua
+   home, destruição em massa recusada, apagar vai para a lixeira com undo.
+4. O resultado volta para o relay; a IA lê e continua a tarefa.
+5. A IA fecha com `task_done`: o agente grava um relatório TXT com o que foi
+   feito e **abre na sua tela** (Windows, Linux e macOS).
+
+## Destaques
+
+- **Zero dependências no seu PC** — o `agent.js` roda com a API padrão do
+  Node.js; nada de `npm install`, nada de build.
+- **Funciona atrás de NAT** — só conexões de saída para o relay; nenhuma
+  porta aberta, nenhum SSH exposto.
+- **Segurança executada no seu PC** — escopo na home, lixeira com desfazer e
+  trava anticatástrofe rodam dentro do agente, antes de cada ação.
+- **Multi-máquina sem cruzar filas** — uma lane por máquina, autenticada por
+  token próprio; nada hardcoded: tokens só no `.env` do servidor e no
+  `ponte.config.json` de cada PC.
+- **Lê qualquer arquivo** — `file_info` identifica o formato real por magic
+  bytes (png, pdf, exe, mp4, zip) e a leitura é por pedaços, sem teto de
+  tamanho: vídeo, ISO e log de gigabytes não estouram memória nem a ponte.
+- **Pronto para IA** — a `SKILL.md` ensina qualquer IA com `curl` a instalar
+  e operar; o agente baixa e atualiza a skill sozinho (boot + a cada 60 s,
+  com ETag: 304 = zero bytes).
+- **Sem telemetria** — nenhum dado vai para os autores: os únicos contatos
+  de rede do agente são o seu relay e o `raw.githubusercontent.com`.
 
 ## Segurança em camadas
 
 | Camada | O que faz |
 |--------|-----------|
-| **Escopo na home** | O agente recusa qualquer caminho fora da home do usuário. `.ssh`, `.gnupg`, `.config`, `.password-store`, `.aws`, `.kube` e a própria pasta `ponte-agent` ficam inacessíveis. |
+| **Escopo na home** | O agente recusa qualquer caminho fora da home do usuário. `.ssh`, `.gnupg`, `.config`, `.password-store`, `.aws`, `.kube` e a própria pasta `ponte-agent` ficam inacessíveis. Desde a v1.11.0 o escopo valida `realpath`: symlink e junction não furam mais a home, e credenciais (`.env`, `.npmrc`, `.git-credentials`, config e log do agente) estão bloqueadas para leitura remota. |
 | **Lixeira com undo** | A IA não apaga nada em definitivo: `delete` e substituições vão para a lixeira do agente, com log JSONL auditável e `undo_last`/`restore`. |
-| **Trava anticatástrofe** | O agente recusa localmente, antes de executar: fork bomb, `mkfs`, `wipefs`, `dd of=/dev/*`, `shred` em disco, `rm -r` de sistema. No Windows, `format`, `diskpart`, `cipher /w`, `vssadmin delete shadows`, `rd /s`/`del /s`/`Remove-Item -Recurse` em raiz de drive, `C:\Windows`, `C:\Program Files` ou `$HOME`. |
+| **Trava anticatástrofe** | Recusa localmente, antes de executar: fork bomb, `mkfs`, `wipefs`, `dd of=/dev/*`, `shred` em disco, `rm -r` de sistema, `&&` no meio do comando, flags como `--no-preserve-root`, `find -delete`, `xargs` destrutivo, `tee`/redirect para `/dev/*`, script baixado da internet e executado direto no shell, `chmod/chown -R` em pasta do sistema, `rm` com `$VAR` ou `..`. No Windows: `format`, `diskpart`, `cipher /w`, `vssadmin delete shadows`, `rd /s`/`del /s`/`Remove-Item -Recurse` em raiz de drive, `C:\Windows`, `C:\Program Files` ou `$HOME`. |
 | **Consentimento no modo** | `run_command` só funciona nos modos que você religa no seu terminal. O modo deus é a exceção consentida: a IA pergunta no chat e só ativa com o seu aceite. |
-| **Tokens separados** | Agente e operador usam tokens distintos; **uma lane por máquina** (token e fila próprios — comando não atravessa) e comandos de teste num canal isolado. Tokens nunca vão para o código nem para o repo: só no `.env` do servidor e no `ponte.config.json` de cada PC. |
+| **Tokens separados** | Agente e operador usam tokens distintos; **uma lane por máquina** (token e fila próprios — comando não atravessa). Tokens nunca vão para o código nem para o repo: só no `.env` do servidor e no `ponte.config.json` de cada PC (permissão 0600). |
 | **Log JSONL** | Toda ação fica registrada em `ponte-log.jsonl`, com resumo e dados de undo. |
+| **Entrega confiável** | Sequência persistida em disco (reiniciar o relay não perde fila), reconnect entrega pendentes com menos de 24 h, resultado reenviado com retry: rede caiu ≠ comando perdido. |
 
 ## Os 4 modos do `run_command`
 
@@ -88,26 +120,32 @@ aberta, nenhum SSH.
 | **modo deus** | A IA pergunta no chat depois de conectar e, com o seu aceite, envia `god_mode {"enabled":true}` | Igual ao autônomo (loga `[deus] $ cmd`); trava, lixeira e log continuam; desliga com `god_mode {"enabled":false}`. |
 
 Os modos supervisionado e autônomo mudam só com um flag digitado por você no
-terminal do seu PC. O modo deus fica salvo em `ponte.config.json` e sobrevive a
-restarts; se você recusar o pedido da IA, a recusa fica registrada e ela não
+terminal do seu PC. O modo deus fica salvo em `ponte.config.json` e sobrevive
+a restarts; se você recusar o pedido da IA, a recusa fica registrada e ela não
 pergunta de novo.
 
 ## Requisitos
 
 | Onde | O quê |
 |------|-------|
-| **Seu PC** (Windows ou Linux) | Node.js 18+, `curl` (no Windows, o `curl.exe` nativo do PowerShell) |
+| **Seu PC** (Windows, Linux ou Termux/Android) | Node.js 18+, `curl` (no Windows, o `curl.exe` nativo do PowerShell) |
 | **VM/servidor da IA** | Node.js 18+ para o relay (Next.js), Python 3 opcional para a CLI |
 
-## Comece por aqui
+## Primeiros passos
 
-### Caminho 1: deixe a IA instalar (recomendado)
+### Caminho 1 — peça para a IA instalar (recomendado)
 
-Abra um chat com sua IA e diga: *"leia https://github.com/micsxnn/ponte-local/blob/main/SKILL.md e instale a ponte pra mim"*. A skill guia relay, tokens, download do agente, validação e o primeiro comando. A ponte já está no ar? Diga *"leia o SKILL.md e opere minha ponte"* colando URL + ADMIN_TOKEN: Claude, Manus ou qualquer IA com `curl` opera sem hospedar nada.
+Abra um chat com sua IA e diga: *"leia
+https://github.com/micsxnn/ponte-local/blob/main/SKILL.md e instale a ponte
+pra mim"*. A skill guia relay, tokens, download do agente, validação e o
+primeiro comando. A ponte já está no ar? Diga *"leia o SKILL.md e opere minha
+ponte"* colando URL + ADMIN_TOKEN: Claude, Manus ou qualquer IA com `curl`
+opera sem hospedar nada.
 
-### Caminho 2: manual
+### Caminho 2 — instalação manual
 
-**No servidor** (detalhes completos em [`SKILL.md`](SKILL.md) e [`relay/RESTAURAR.md`](relay/RESTAURAR.md)):
+**No servidor** (detalhes completos em [`SKILL.md`](SKILL.md) e
+[`relay/RESTAURAR.md`](relay/RESTAURAR.md)):
 
 ```bash
 CI=1 npx create-next-app@latest ponte-relay --typescript --app --no-eslint --src-dir --import-alias "@/*"
@@ -139,12 +177,17 @@ curl.exe -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/mai
 node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
 
-> Atenção: no PowerShell, use sempre `curl.exe`. O `curl` sem `.exe` é um alias
-> do `Invoke-WebRequest` e quebra o download. Próximas execuções:
-> `~/ponte-agent/rodar.sh` (Linux) ou `cd $HOME\ponte-agent; node agent.js`
-> (Windows). Instalou o Node agora? Feche e reabra o PowerShell antes de
-> continuar: o PATH só é lido por janelas novas e o `node` não aparece na
-> janela aberta.
+> **Dicas que evitam 90% dos problemas**
+>
+> - No PowerShell, use sempre `curl.exe`: o `curl` sem `.exe` é um alias do
+>   `Invoke-WebRequest` e quebra o download.
+> - Instalou o Node agora? Feche e reabra o PowerShell: o PATH só é lido por
+>   janelas novas e o `node` não aparece na janela aberta.
+> - Próximas execuções: `~/ponte-agent/rodar.sh` (Linux) ou
+>   `cd $HOME\ponte-agent; node agent.js` (Windows). No Windows, o
+>   `rodar.bat` manda a saída para arquivo e desliga o QuickEdit (clique no
+>   console não congela mais o agente) e o `watchdog.bat` religa o agente
+>   sozinho se ele morrer.
 
 ## As 24 ações do agente
 
@@ -155,13 +198,12 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 | **Organizar** | `organize_plan` (propõe, não executa) · `apply_plan` (lote aprovado) · `duplicates` (md5 + espaço recuperável) |
 | **Binários** | `read_binary` (por pedaços, sem teto de tamanho) · `write_binary` (até 8 MB, via `ponte.py pegar`/`enviar`) |
 | **Comando** | `run_command` (com os modos acima) |
-| **Controle** | `god_mode` (liga/desliga as confirmações; a IA só ativa após o seu aceite no chat) · `skill_update` (força o download da SKILL.md; o agente também atualiza sozinho no boot e a cada 60 s) ·
-  `task_done` (fecha a tarefa: o agente grava o relatório TXT e abre na tela do usuário) |
+| **Controle** | `god_mode` (liga/desliga as confirmações; a IA só ativa após o seu aceite no chat) · `skill_update` (força o download da SKILL.md; o agente também atualiza sozinho no boot e a cada 60 s) · `task_done` (fecha a tarefa: o agente grava o relatório TXT e abre na tela do usuário) |
 
 A referência completa, com argumentos exatos, está na
-[tabela da SKILL.md](SKILL.md#fase-4--operar-referência-das-ações).
+[tabela de ações da SKILL.md](SKILL.md#42-as-ações).
 
-## Estrutura do repo
+## Estrutura do repositório
 
 ```
 ponte-local/
@@ -186,16 +228,32 @@ ponte-local/
 └── docs/banner.svg        ← banner do repo
 ```
 
+## Destaques por versão
+
+| Componente | Versão | O que trouxe |
+|------------|--------|--------------|
+| Agente | **v1.12.0** (atual) | Continuidade das correções de segurança da v1.11.0 |
+| Agente | v1.11.0 | Auditoria de segurança: trava cobre `&&`, `--no-preserve-root`, `find -delete`, `xargs` destrutivo, `tee`/redirect para `/dev/*`, script baixado e executado direto no bash, `chmod/chown -R` de sistema e `rm` com `$VAR`/`..`; escopo valida `realpath` (symlink não fura a home); credenciais bloqueadas para leitura remota; timeout mata o grupo de processos; token aceito via `PONTE_AGENT_TOKEN`; config com permissão 0600 |
+| Agente | v1.10.x | Relatório obrigatório blindado (v1.10.0/1.10.5); logo no terminal; Termux/Android (v1.10.1); largura real do terminal (v1.10.4) |
+| Agente | v1.8.0 | Relatório "O QUE FOI FEITO" (sem lista de comandos); `rodar.bat` com QuickEdit off; `watchdog.bat` religa sozinho |
+| Agente | v1.7.0 | `task_done`: relatório TXT gravado e aberto na tela do usuário |
+| Agente | v1.5.1 | Modo deus consentido no chat; SKILL.md baixada no boot e a cada 60 s |
+| Agente | v1.4.0 | Leitura universal (formato por magic bytes) e por pedaços, sem teto de tamanho |
+| Agente | v1.3.0 | Suporte a Windows (`cmd.exe`, trava com padrões Windows, lixeira interna) |
+| Relay | **v1.5.2** (atual) | Download em pedaços chega inteiro |
+| Relay | v1.3.0 | Lane por máquina: token e fila próprios, comando não atravessa |
+| Relay | v1.2.0 | Estado inteiro em `.ponte-estado.json`; reconnect entrega pendentes com menos de 24 h; janela "conectado" de 45 s |
+
 ## Perguntas frequentes
 
 **A IA pode formatar meu PC?** Não. O agente recusa comandos de destruição em
 massa antes de executar, apaga arquivos só para a lixeira (com undo) e não
 enxerga nada fora da sua home.
 
-**A IA pode ligar o `run_command` sozinha?** Os modos supervisionado e autônomo
-só mudam com um flag digitado por você no terminal do seu PC. O modo deus é a
-exceção consentida: a IA pergunta no chat e só ativa com o seu aceite; a recusa
-fica registrada.
+**A IA pode ligar o `run_command` sozinha?** Os modos supervisionado e
+autônomo só mudam com um flag digitado por você no terminal do seu PC. O modo
+deus é a exceção consentida: a IA pergunta no chat e só ativa com o seu
+aceite; a recusa fica registrada.
 
 **Preciso abrir portas no meu roteador?** Não. O agente faz requests de saída
 para o relay; o que atravessa a internet é JSON de metadados. Conteúdo de
@@ -203,44 +261,52 @@ arquivo não fica no ar: binários vão em base64, sob demanda, por comando seu.
 
 **Funciona no Windows?** Sim, desde o agente v1.3.0: `run_command` via
 `cmd.exe`, trava anticatástrofe com padrões Windows e lixeira interna do
-agente (não é a Lixeira do Windows; restaure com `restore`/`undo_last`).
+agente (não é a Lixeira do Windows; restaure com `restore`/`undo_last`). No
+Windows o `rodar.bat` desliga o QuickEdit — clicar no console não congela mais
+o agente — e o `watchdog.bat` religa o agente se ele morrer. Também roda em
+Termux/Android (v1.10.1).
 
 **E arquivos enormes (vídeo, ISO, log de 1 GB)?** A leitura é por pedaços:
-`file_info` diz o formato real (magic bytes), `read_text`/`read_binary` leem de
-`offset` em `offset` (até 6 MB por chamada) e devolvem `proximoOffset`. O
+`file_info` diz o formato real (magic bytes), `read_text`/`read_binary` leem
+de `offset` em `offset` (até 6 MB por chamada) e devolvem `proximoOffset`. O
 arquivo inteiro não precisa caber na memória nem na ponte.
 
 ## Aviso legal, privacidade e uso responsável
 
 **Uso permitido.** A ponte existe para você operar **o seu próprio
-computador** (ou máquina de quem te deu autorização expressa) pela sua IA.
-No Brasil, invadir dispositivo informático alheio é crime (art. 154-A do
-Código Penal, incluído pela Lei nº 12.737/2012), assim como impedir ou
-perturbar serviço informático (art. 266). Use só no que é seu ou no que
-tiver permissão — o software assume que a instalação foi feita pelo dono
-da máquina, de forma visível e consciente (o agente roda em primeiro
-plano, com banner, e o `run_command` só existe nos modos que você mesmo
-ativa).
+computador** (ou máquina de quem te deu autorização expressa) pela sua IA. No
+Brasil, invadir dispositivo informático alheio é crime (art. 154-A do Código
+Penal, incluído pela Lei nº 12.737/2012), assim como impedir ou perturbar
+serviço informático (art. 266). Use só no que é seu ou no que tiver permissão
+— o software assume que a instalação foi feita pelo dono da máquina, de forma
+visível e consciente (o agente roda em primeiro plano, com banner, e o
+`run_command` só existe nos modos que você mesmo ativa).
 
 **Privacidade (LGPD, Lei nº 13.709/2018).** O agente coleta no SEU PC
-metadados da máquina (usuário, nome do host, CPU, RAM, versão do Node) e
-os envia **ao relay que VOCÊ hospeda**; conteúdo de arquivos só trafega
-quando uma ação sua pede, sempre entre o seu PC e o seu relay. **Este
-projeto não tem telemetria**: nenhuma informação vai para os autores ou
-para terceiros — os únicos contatos de rede do agente são o seu relay e o
-`raw.githubusercontent.com` (auto-atualização da SKILL.md). Quem opera a
-ponte é o controlador dos dados nos termos da LGPD; o software é uma
-ferramenta neutra e a base legal do tratamento é do operador.
+metadados da máquina (usuário, nome do host, CPU, RAM, versão do Node) e os
+envia **ao relay que VOCÊ hospeda**; conteúdo de arquivos só trafega quando
+uma ação sua pede, sempre entre o seu PC e o seu relay. **Este projeto não tem
+telemetria**: nenhuma informação vai para os autores ou para terceiros — os
+únicos contatos de rede do agente são o seu relay e o
+`raw.githubusercontent.com` (auto-atualização da SKILL.md). Quem opera a ponte
+é o controlador dos dados nos termos da LGPD; o software é uma ferramenta
+neutra e a base legal do tratamento é do operador.
 
 **Sem garantia.** O código vem "COMO ESTÁ", nos termos da licença MIT
 ([LICENSE](LICENSE)). Segurança é um processo: leia a
-[política de segurança](SECURITY.md) antes de reportar vulnerabilidades
-e os avisos de terceiros em [NOTICE.md](NOTICE.md).
+[política de segurança](SECURITY.md) antes de reportar vulnerabilidades e os
+avisos de terceiros em [NOTICE.md](NOTICE.md).
 
 ## Contribuindo
 
-Abra issues e PRs. Relatos do agente em outras distros e no Windows são os mais
-úteis; para mudanças maiores, descreva o caso de uso numa issue antes.
+Abra issues e PRs. Relatos do agente em outras distros, no Windows e no Termux
+são os mais úteis; para mudanças maiores, descreva o caso de uso numa issue
+antes.
+
+## Segurança
+
+Encontrou uma vulnerabilidade? **Não abra issue pública.** Siga a
+[política de segurança](SECURITY.md) e reporte em privado.
 
 ## Licença
 
