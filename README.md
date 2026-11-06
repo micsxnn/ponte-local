@@ -166,6 +166,8 @@ A referência completa, com argumentos exatos, está na
 ```
 ponte-local/
 ├── SKILL.md               ← entrada para IAs: instale e opere (comece aqui)
+├── SECURITY.md            ← como reportar vulnerabilidades em privado
+├── NOTICE.md              ← avisos de licença de dependências de terceiros
 ├── agente/
 │   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.12.0)
 │   ├── LEIA-ME.md         ← manual do agente no PC do usuário
@@ -207,6 +209,33 @@ agente (não é a Lixeira do Windows; restaure com `restore`/`undo_last`).
 `file_info` diz o formato real (magic bytes), `read_text`/`read_binary` leem de
 `offset` em `offset` (até 6 MB por chamada) e devolvem `proximoOffset`. O
 arquivo inteiro não precisa caber na memória nem na ponte.
+
+## Aviso legal, privacidade e uso responsável
+
+**Uso permitido.** A ponte existe para você operar **o seu próprio
+computador** (ou máquina de quem te deu autorização expressa) pela sua IA.
+No Brasil, invadir dispositivo informático alheio é crime (art. 154-A do
+Código Penal, incluído pela Lei nº 12.737/2012), assim como impedir ou
+perturbar serviço informático (art. 266). Use só no que é seu ou no que
+tiver permissão — o software assume que a instalação foi feita pelo dono
+da máquina, de forma visível e consciente (o agente roda em primeiro
+plano, com banner, e o `run_command` só existe nos modos que você mesmo
+ativa).
+
+**Privacidade (LGPD, Lei nº 13.709/2018).** O agente coleta no SEU PC
+metadados da máquina (usuário, nome do host, CPU, RAM, versão do Node) e
+os envia **ao relay que VOCÊ hospeda**; conteúdo de arquivos só trafega
+quando uma ação sua pede, sempre entre o seu PC e o seu relay. **Este
+projeto não tem telemetria**: nenhuma informação vai para os autores ou
+para terceiros — os únicos contatos de rede do agente são o seu relay e o
+`raw.githubusercontent.com` (auto-atualização da SKILL.md). Quem opera a
+ponte é o controlador dos dados nos termos da LGPD; o software é uma
+ferramenta neutra e a base legal do tratamento é do operador.
+
+**Sem garantia.** O código vem "COMO ESTÁ", nos termos da licença MIT
+([LICENSE](LICENSE)). Segurança é um processo: leia a
+[política de segurança](SECURITY.md) antes de reportar vulnerabilidades
+e os avisos de terceiros em [NOTICE.md](NOTICE.md).
 
 ## Contribuindo
 

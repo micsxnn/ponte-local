@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 .ponte-estado.json
 .ponte-seq
+.ponte_since_*
 .env
 ponte-log.jsonl*
