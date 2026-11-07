@@ -30,6 +30,18 @@ VM**, sem você precisar copiar nada manualmente.
   - **Termux:** `pkg install termux-api`
   - No Wayland a janela em foco é capturada (o compositor não expõe as
     janelas de forma genérica) — no X11 e no Windows a janela pedida sai exata
+- **Só se quiser que a IA mexa no seu mouse** (`mouse_move`, `mouse_click`,
+  `mouse_scroll`, `mouse_drag`): também precisa de uma ferramenta do sistema.
+  - **Windows:** nada a instalar (PowerShell + user32 são nativos)
+  - **Linux X11:** `sudo pacman -S --needed xdotool`
+  - **Linux Wayland:** `sudo pacman -S --needed ydotool`, depois
+    `sudo usermod -aG input $USER` (relogue) e
+    `systemctl --user enable --now ydotool`
+    (o `xdotool` no Wayland mexe só no cursor do XWayland — não funciona)
+  - **Termux:** `pkg install termux-api`
+  - **macOS:** `brew install cliclick`
+  - Um clique pode apertar botões destrutivos na tela — a IA lê a tela
+    antes de clicar e te pergunta quando o alvo for sério.
 
 ## Como rodar (primeira vez)
 
@@ -156,6 +168,11 @@ No Windows Terminal o problema não existe (não há QuickEdit).
 | `disk_usage`     | Mostra as pastas que mais ocupam espaço                             |
 | `undo_last`      | Desfaz a última ação reversível                                     |
 | `free_space`     | Mostra espaço livre em disco                                        |
+| `mouse_position` | Onde está o cursor agora (x, y) e o tamanho da tela |
+| `mouse_move`     | Move o cursor para uma posição (sem clicar) |
+| `mouse_click`    | Clica em uma posição — botão esquerdo, direito ou meio, simples ou duplo |
+| `mouse_scroll`   | Rola a página para cima, baixo, esquerda ou direita |
+| `mouse_drag`     | Arrasta de uma posição até outra |
 | `screenshot`     | Tira print da tela inteira e devolve a imagem em base64 (`format:"jpg"` deixa bem menor) |
 | `screenshot_window` | Tira print de UMA janela (a que está em foco, ou a que casar com `window_title`/`window_class`/`window_id`) |
 | `run_command`    | Executa um comando de shell. Depende do modo (veja abaixo): **supervisionado** pede `s/N` no terminal; **autônomo** executa direto, exceto padrões catastróficos |

@@ -251,6 +251,47 @@ estiver no Wayland, diga isso ANTES de mandar a ação.
 ⚠️ **Tela grande**: 4K em PNG passa de 9 MB e a ponte recusa. Use
 `{"format":"jpg","quality":60}` — fica ~10× menor.
 
+### Mexer no mouse — o agente PRECISA ENSINAR o usuário a instalar
+
+As ações `mouse_move`, `mouse_click`, `mouse_scroll`, `mouse_drag` e
+`mouse_position` **não funcionam sozinhas**: elas dependem de uma ferramenta
+de controle do mouse que o sistema precisa ter. O resto do agente é
+zero-dependências, mas o mouse não é.
+
+**REGRA:** se a ação voltar com erro de "ferramenta ausente" (ou "Não consegui
+... no mouse"), a IA **DEVE** pedir ao usuário para instalar — nunca fingir
+que mexeu no mouse, nunca contornar com `run_command`.
+
+| Onde | Precisa de | Comando |
+|------|-----------|---------|
+| **Windows** | nada | PowerShell + user32 já vêm no sistema |
+| **Linux X11** | `xdotool` | `sudo pacman -S --needed xdotool` |
+| **Linux Wayland** | `ydotool` ou `dotool` | `sudo pacman -S --needed ydotool` + `sudo usermod -aG input $USER` (relogin) + `systemctl --user enable --now ydotool` |
+| **Termux** | `termux-api` | `pkg install termux-api` |
+| **macOS** | `cliclick` | `brew install cliclick` |
+
+**Como descobrir a sessão gráfica** (X11 ou Wayland) — peça para o usuário
+rodar:
+
+```bash
+echo $XDG_SESSION_TYPE
+```
+
+⚠️ **No Wayland o `xdotool` NÃO serve**: ele mexe só no cursor do XWayland
+(aplicativos X11), não no cursor real do compositor. O agente tenta o
+`ydotool` primeiro e, se cair no `xdotool`, a resposta vem com `aviso` —
+**a IA DEVE ler esse aviso** e, se ele estiver lá, avisar o usuário de que o
+mouse não vai ser controlado de verdade.
+
+**Diga assim ao usuário:** "para eu mexer no seu mouse, seu sistema precisa
+de uma ferramenta de controle — no seu caso é `sudo pacman -S --needed
+xdotool`. É do sistema, não mexe em nada seu. Quer que eu instale?"
+
+⚠️ **CLIQUE É AÇÃO DE CONSEQUÊNCIA.** Um clique pode apertar "Apagar",
+"Confirmar", "Finalizar compra", "Enviar". Antes de clicar, a IA **tem que
+ler a tela** (`screenshot`) para saber o que está sob o cursor, e quando o
+alvo for destrutivo ou irreversível, **confirmar com o usuário no chat**.
+
 No **servidor onde VOCÊ roda** (VM, container, seu próprio servidor):
 
 - Node.js 18+ (para o relay Next.js) e Python 3 (opcional, para o operador CLI)
@@ -564,6 +605,11 @@ aceita ambos os estilos conforme o SO dele.
 | `write_binary` | `{"path":"...","base64":"...","overwrite":true}` | Grava binário (máx 8 MB) |
 | `screenshot` | `{"format":"png","quality":85}` | Print da TELA INTEIRA, em base64 (`dados`). `format`: `png` (padrão) ou `jpg` (bem menor — use em tela grande). Linux: usa o que a distro já tem (import/scrot/maim/gnome-screenshot/spectacle/grim); Windows: PowerShell + System.Drawing (nativo); macOS: screencapture; Termux: termux-screenshot |
 | `screenshot_window` | `{"window_title":"Firefox","window_class":"","window_id":"","format":"png"}` | Print de UMA janela. Sem argumento: a janela em foco. Por `window_title`/`window_class`/`window_id`: no X11 e no Windows a janela exata; no Wayland o compositor não expõe isso, então a IA recebe a janela em foco e a resposta avisa (`janela.aviso`) |
+| `mouse_position` | `{}` | Onde está o cursor agora: `{x, y}` + `larguraTela`/`alturaTela` quando a ferramenta sabe |
+| `mouse_move` | `{"x":1200,"y":800}` | Move o cursor para (x, y) — não clica |
+| `mouse_click` | `{"x":1200,"y":800,"button":"left","count":1}` | Clica em (x, y). `button`: `left` (1), `middle` (2), `right` (3). `count`: cliques repetidos (duplo = 2) |
+| `mouse_scroll` | `{"amount":3,"direction":"down"}` | Rola. `direction`: `up`, `down`, `left`, `right`; `amount`: notches (padrão 3) |
+| `mouse_drag` | `{"x":100,"y":100,"x2":800,"y2":600}` | Arrasta de (x, y) até (x2, y2) com o botão pressionado |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (abaixo) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | modo deus: liga (APENAS após o usuário aceitar NO CHAT — a IA pergunta, zero prompt no terminal) / desliga (direto) / registra recusa — seção própria abaixo |
 | `skill_update` | `{}` | Força o download da SKILL.md mais recente deste repo; devolve `atualizou`, `de`, `para`, `versaoLocal` (o agente também atualiza sozinho no boot e a cada 60 s) |

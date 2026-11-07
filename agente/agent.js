@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.13.0 (Windows + Linux + macOS + Termux)
+ * Ponte Local — Agente v1.14.0 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -72,6 +72,12 @@
  *    Wayland o compositor não expõe isso de forma genérica, então a janela
  *    EM FOCO é capturada e a resposta avisa. O título da janela vem da IA
  *    e NUNCA entra num shell (execFile com array de args) — sem injeção.
+ *  - Mouse (v1.14.0): as ações mouse_position, mouse_move, mouse_click,
+ *    mouse_scroll e mouse_drag mexem no cursor do usuário. ZERO dependência
+ *    npm: no Windows usa PowerShell + user32 (nativo), no X11 o xdotool, no
+ *    Wayland o ydotool/dotool, no Termux o `input` do Android, no macOS o
+ *    cliclick. Coordenadas são inteiros validados e NUNCA entram num shell
+ *    (execFile com array de args) — sem injeção possível.
  *  - Segurança v1.11.0 (audit com subagentes + skills security-review/
  *    security-and-hardening): trava anticatástrofe cobre && no meio do
  *    comando, flags com hífen interno (--no-preserve-root), find -delete,
@@ -91,9 +97,9 @@ const path = require("path");
 const os = require("os");
 const http = require("http");
 const https = require("https");
-const { execFile, exec } = require("child_process");
+const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.13.0";
+const VERSION = "1.14.0";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -2148,6 +2154,429 @@ async function capturarScreenshot(opts) {
   return resp;
 }
 
+// ------------------------------------------------------- mouse (v1.14.0)
+// Mexer no mouse do usuário: mover, clicar, rolar, arrastar e ler a
+// posição. Como as ações de screenshot, ZERO dependência npm: o agente
+// usa o que o sistema já tem.
+//
+//  - Windows:      PowerShell + user32.dll (SetCursorPos/mouse_event) —
+//                  nativo, sempre presente
+//  - Linux/X11:    xdotool (mousemove/click/scroll/getmouselocation)
+//  - Linux/Wayland: ydotool ou dotool (falam com o compositor via uinput)
+//  - Termux:       `input` do Android (tap/swipe/roll)
+//  - macOS:        AppleScript (click at) — mover exige `cliclick`
+//
+// Coordenadas são inteiros validados e NUNCA entram num shell: tudo via
+// execFile com array de argumentos (sem shell), sem injeção possível.
+
+const BOTOES_MOUSE = { left: 1, middle: 2, right: 3, meio: 2, dir: 3, esq: 1 };
+
+function normalizarBotao(b) {
+  const s = String(b == null ? "left" : b).toLowerCase().trim();
+  if (BOTOES_MOUSE[s]) return BOTOES_MOUSE[s];
+  if (s === "1" || s === "2" || s === "3") return Number(s);
+  throw new Error('Botão inválido: "' + s + '" — use left (1), middle (2) ou right (3)');
+}
+
+// coordenada: inteiro, dentro de um teto sanatório (o SO recusa fora da tela)
+function coord(nome, v) {
+  const n = Math.round(Number(v));
+  if (!isFinite(n)) throw new Error("Coordenada inválida em " + nome + ": " + v);
+  if (n < -100000 || n > 100000)
+    throw new Error("Coordenada fora do intervalo em " + nome + ": " + n);
+  return n;
+}
+
+function amountScroll(v, padrao) {
+  const n = Math.round(Number(v == null ? padrao : v));
+  if (!isFinite(n)) throw new Error("amount inválido: " + v);
+  if (n < -1000 || n > 1000) throw new Error("amount fora do intervalo (-1000..1000): " + n);
+  return n;
+}
+
+// ---------------------------------------------------------------- Windows
+const PS_MOUSE = [
+  "param([string]$Op,[int]$X,[int]$Y,[int]$X2,[int]$Y2,[int]$Botao,[int]$Amount,[int]$Count,[int]$Delta)",
+  "$ErrorActionPreference = 'Stop'",
+  "Add-Type -AssemblyName System.Windows.Forms",
+  "$src = @'",
+  "using System;",
+  "using System.Runtime.InteropServices;",
+  "public class PonteMouse {",
+  "  [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y);",
+  "  [DllImport(\"user32.dll\")] public static extern bool GetCursorPos(out POINT p);",
+  "  [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr extra);",
+  "  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }",
+  "}",
+  "'@",
+  "Add-Type -TypeDefinition $src",
+  "$DOWN = @{ 1 = 0x02; 2 = 0x20; 3 = 0x08 }",
+  "$UP = @{ 1 = 0x04; 2 = 0x40; 3 = 0x10 }",
+  "if ($Op -eq 'position') {",
+  "  $p = New-Object PonteMouse+POINT",
+  "  [void][PonteMouse]::GetCursorPos([ref]$p)",
+  "  $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen",
+  "  Write-Output ('POS ' + $p.X + ' ' + $p.Y + ' ' + $vs.Width + ' ' + $vs.Height)",
+  "  exit 0",
+  "}",
+  "if ($Op -eq 'scroll') {",
+  "  $f = 0x0800",
+  "  $passo = 1",
+  "  if ($Delta -lt 0) { $passo = -1 }",
+  "  $n = [Math]::Abs($Delta)",
+  "  if ($n -eq 0) { $n = 1 }",
+  "  for ($i = 0; $i -lt $n; $i++) {",
+  "    [PonteMouse]::mouse_event($f, 0, 0, $passo, [IntPtr]::Zero)",
+  "    Start-Sleep -Milliseconds 30",
+  "  }",
+  "  exit 0",
+  "}",
+  "if ($Op -eq 'drag') {",
+  "  [void][PonteMouse]::SetCursorPos($X, $Y)",
+  "  Start-Sleep -Milliseconds 60",
+  "  [PonteMouse]::mouse_event($DOWN[$Botao], 0, 0, 0, [IntPtr]::Zero)",
+  "  Start-Sleep -Milliseconds 60",
+  "  [void][PonteMouse]::SetCursorPos($X2, $Y2)",
+  "  Start-Sleep -Milliseconds 60",
+  "  [PonteMouse]::mouse_event($UP[$Botao], 0, 0, 0, [IntPtr]::Zero)",
+  "  exit 0",
+  "}",
+  "[void][PonteMouse]::SetCursorPos($X, $Y)",
+  "Start-Sleep -Milliseconds 40",
+  "for ($i = 0; $i -lt $Count; $i++) {",
+  "  [PonteMouse]::mouse_event($DOWN[$Botao], 0, 0, 0, [IntPtr]::Zero)",
+  "  [PonteMouse]::mouse_event($UP[$Botao], 0, 0, 0, [IntPtr]::Zero)",
+  "  if ($Count -gt 1) { Start-Sleep -Milliseconds 80 }",
+  "}",
+  "",
+].join("\n");
+
+async function mouseWindows(op, o) {
+  const ps1 = caminhoTemp("mouse.ps1");
+  try {
+    fs.writeFileSync(ps1, PS_MOUSE, "utf8");
+    const args = [
+      "-Op", op,
+      "-X", String(o.x || 0),
+      "-Y", String(o.y || 0),
+      "-X2", String(o.x2 || 0),
+      "-Y2", String(o.y2 || 0),
+      "-Botao", String(o.botao || 1),
+      "-Amount", String(o.amount || 0),
+      "-Count", String(o.count || 1),
+      "-Delta", String(o.delta || 0),
+    ];
+    const r = await executarPowershell(ps1, args, 30000);
+    if (!r.ok) {
+      const msg = (r.stderr || r.stdout || "falhou").trim().split("\n")[0].slice(0, 140);
+      return { ok: false, erros: ["PowerShell/user32: " + msg] };
+    }
+    const m = (r.stdout || "").match(/POS\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/);
+    const saida = { ok: true, ferramenta: "powershell/user32" };
+    if (m) {
+      saida.x = Number(m[1]);
+      saida.y = Number(m[2]);
+      saida.larguraTela = Number(m[3]);
+      saida.alturaTela = Number(m[4]);
+    }
+    return saida;
+  } catch (e) {
+    return { ok: false, erros: ["falha ao rodar PowerShell: " + (e && e.message ? e.message : String(e))] };
+  } finally {
+    try {
+      fs.unlinkSync(ps1);
+    } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------------- Linux
+// X11: xdotool. Wayland: ydotool (uinput) ou dotool (Rust).
+// O ydotool fala com um daemon (ydotoold) via socket. Se o daemon não
+// estiver de pé, o comando falha com "failed to connect socket" — aqui a
+// gente sobe o daemon e tenta de novo.
+function subirYdotoald() {
+  try {
+    const p = spawn("ydotoald", [], { detached: true, stdio: "ignore" });
+    // o erro do spawn chega ASSÍNCRONO: sem este handler, um "ENOENT"
+    // (binário ausente) vira uncaughtException e polui o log do agente
+    p.on("error", () => {});
+    p.unref();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function garantirYdotoald() {
+  const teste = await executarBin("ydotool", ["mousemove", "--", "0", "0"], 5000);
+  if (teste.code === 0) return true; // já está de pé
+  if (!subirYdotoald()) return false;
+  await sleep(700); // o daemon precisa subir
+  const outro = await executarBin("ydotool", ["mousemove", "--", "0", "0"], 5000);
+  return outro.code === 0;
+}
+
+async function mouseLinux(op, o) {
+  const erros = [];
+  const wayland = ehSessaoWayland();
+  if (wayland) {
+    const ok = await garantirYdotoald();
+    if (!ok) erros.push("ydotoald: não subiu (o usuário precisa estar no grupo 'input' e ter /dev/uinput)");
+  }
+  // NO WAYLAND o xdotool "funciona" mas mexe só no cursor do XWayland — o
+  // cursor real do compositor não se move. Por isso a ordem muda: ydotool /
+  // dotool (uinput) primeiro, xdotool só como último recurso (e a resposta
+  // avisa).
+  const ordem = wayland ? ["ydotool", "dotool", "xdotool"] : ["xdotool", "ydotool", "dotool"];
+
+  const tentativas = {
+    position: {
+      xdotool: async () => {
+        const r = await executarBin("xdotool", ["getmouselocation", "--shell"], 10000);
+        if (r.code !== 0) return null;
+        const x = (r.stdout.match(/^X=(\d+)/m) || [])[1];
+        const y = (r.stdout.match(/^Y=(\d+)/m) || [])[1];
+        if (x === undefined || y === undefined) return null;
+        return { x: Number(x), y: Number(y), ...(await tamanhoTelaLinux()) };
+      },
+      ydotool: async () => null, // ydotool não lê a posição
+      dotool: async () => null,
+    },
+    move: {
+      xdotool: async () => {
+        const r = await executarBin("xdotool", ["mousemove", String(o.x), String(o.y)], 10000);
+        return r.code === 0 ? { x: o.x, y: o.y } : null;
+      },
+      ydotool: async () => {
+        const r = await executarBin("ydotool", ["mousemove", "--", String(o.x), String(o.y)], 10000);
+        return r.code === 0 ? { x: o.x, y: o.y } : null;
+      },
+      dotool: async () => {
+        const r = await executarBin("dotool", ["mousemove", "--absolute", String(o.x), String(o.y)], 10000);
+        return r.code === 0 ? { x: o.x, y: o.y } : null;
+      },
+    },
+    click: {
+      xdotool: async () => {
+        const args = [];
+        if (o.count > 1) args.push("--repeat", String(o.count), "--delay", "90");
+        args.push(String(o.botao));
+        const r = await executarBin("xdotool", ["click"].concat(args), 15000);
+        return r.code === 0 ? { botao: o.botao, cliques: o.count } : null;
+      },
+      ydotool: async () => {
+        // ydotool usa bitmask: esq=0x01, dir=0x02, meio=0x04
+        const mask = { 1: "0x01", 2: "0x04", 3: "0x02" }[o.botao];
+        let ok = false;
+        for (let i = 0; i < o.count; i++) {
+          const r = await executarBin("ydotool", ["click", mask], 10000);
+          if (r.code !== 0) return ok ? { botao: o.botao, cliques: i } : null;
+          ok = true;
+          if (o.count > 1) await sleep(90);
+        }
+        return ok ? { botao: o.botao, cliques: o.count } : null;
+      },
+      dotool: async () => null,
+    },
+    scroll: {
+      xdotool: async () => {
+        // botões 4 (cima), 5 (baixo), 6 (esquerda), 7 (direita)
+        const botao = o.direcao === "up" ? 4 : o.direcao === "down" ? 5 : o.direcao === "left" ? 6 : 7;
+        const n = Math.abs(o.amount) || 1;
+        const args = [];
+        if (n > 1) args.push("--repeat", String(n), "--delay", "40");
+        args.push(String(botao));
+        const r = await executarBin("xdotool", ["click"].concat(args), 20000);
+        return r.code === 0 ? { direcao: o.direcao, amount: o.amount } : null;
+      },
+      ydotool: async () => {
+        const r = await executarBin("ydotool", ["wheel", String(o.amount)], 10000);
+        return r.code === 0 ? { direcao: o.direcao, amount: o.amount } : null;
+      },
+      dotool: async () => null,
+    },
+    drag: {
+      xdotool: async () => {
+        const r = await executarBin(
+          "xdotool",
+          [
+            "mousemove", String(o.x), String(o.y),
+            "mousedown", String(o.botao),
+            "mousemove", String(o.x2), String(o.y2),
+            "mouseup", String(o.botao),
+          ],
+          20000
+        );
+        return r.code === 0 ? { de: [o.x, o.y], para: [o.x2, o.y2] } : null;
+      },
+      ydotool: async () => {
+        const mask = { 1: "0x01", 2: "0x04", 3: "0x02" }[o.botao];
+        const m1 = await executarBin("ydotool", ["mousemove", "--", String(o.x), String(o.y)], 10000);
+        if (m1.code !== 0) return null;
+        const d1 = await executarBin("ydotool", ["mousedown", mask], 10000);
+        if (d1.code !== 0) return null;
+        await executarBin("ydotool", ["mousemove", "--", String(o.x2), String(o.y2)], 10000);
+        await executarBin("ydotool", ["mouseup", mask], 10000);
+        return { de: [o.x, o.y], para: [o.x2, o.y2] };
+      },
+      dotool: async () => null,
+    },
+  };
+
+  const plano = tentativas[op];
+  if (!plano) return { ok: false, erros: ["operação de mouse desconhecida: " + op] };
+
+  for (const bin of ordem) {
+    const f = plano[bin];
+    if (!f) continue;
+    const r = await f();
+    if (r) {
+      const aviso = avisoSessao(bin);
+      return Object.assign({ ok: true, ferramenta: bin }, r, aviso ? { aviso: aviso } : {});
+    }
+    const p = await executarBin(bin, ["--version"], 5000);
+    erros.push(p.faltaBinario ? bin + ": não instalado" : bin + ": falhou");
+  }
+
+  return {
+    ok: false,
+    erros: erros.concat([
+      wayland
+        ? "no Wayland instale: ydotool (sudo pacman -S --needed ydotool) ou dotool — o usuário precisa estar no grupo 'input' e o daemon ydotoald de pé (systemctl --user enable --now ydotool)"
+        : "no X11 instale: xdotool (sudo pacman -S --needed xdotool)",
+    ]),
+  };
+}
+
+function ehSessaoWayland() {
+  return (
+    !!process.env.WAYLAND_DISPLAY ||
+    String(process.env.XDG_SESSION_TYPE || "").toLowerCase() === "wayland"
+  );
+}
+
+// No Wayland, o xdotool só mexe no cursor do XWayland (aplicativos X11),
+// NÃO no cursor real do compositor. Sem avisar, a IA acha que moveu o mouse
+// e age sobre a tela errada.
+function avisoSessao(ferramenta) {
+  if (ehSessaoWayland() && ferramenta === "xdotool") {
+    return "ATENÇÃO: sessão Wayland — o xdotool move só o cursor do XWayland, não o cursor real do compositor. Use ydotool ou dotool para controlar o mouse de verdade.";
+  }
+  return null;
+}
+
+async function tamanhoTelaLinux() {
+  const r = await executarBin("xrandr", ["--current"], 10000);
+  if (r.code !== 0) return {};
+  const m = r.stdout.match(/(\d+)x(\d+)\+/);
+  if (!m) return {};
+  return { larguraTela: Number(m[1]), alturaTela: Number(m[2]) };
+}
+
+// ---------------------------------------------------------------- Termux
+async function mouseTermux(op, o) {
+  // `input` do Android: tap / swipe / roll
+  if (op === "position") {
+    const r = await executarBin("dumpsys", ["input"], 20000);
+    const m = r.stdout && r.stdout.match(/Pointer\s*\(.*?\)\s*:\s*(-?\d+),\s*(-?\d+)/);
+    if (m) return { ok: true, ferramenta: "dumpsys input", x: Number(m[1]), y: Number(m[2]) };
+    return { ok: false, erros: ["não consegui ler a posição do ponteiro (dumpsys input)"] };
+  }
+  if (op === "move") {
+    // Android não tem "mover sem clicar": o mais perto é um swipe de 1px
+    const r = await executarBin("input", ["swipe", String(o.x), String(o.y), String(o.x), String(o.y), "60"], 15000);
+    if (r.code === 0) return { ok: true, ferramenta: "input swipe", x: o.x, y: o.y, nota: "no Android o 'mover' é um toque sem deslocamento" };
+    return { ok: false, erros: ["input swipe falhou: " + (r.stderr || "").trim().slice(0, 80)] };
+  }
+  if (op === "click") {
+    const r = await executarBin("input", ["tap", String(o.x), String(o.y)], 15000);
+    if (r.code === 0) return { ok: true, ferramenta: "input tap", botao: 1, cliques: 1 };
+    return { ok: false, erros: ["input tap falhou: " + (r.stderr || "").trim().slice(0, 80)] };
+  }
+  if (op === "scroll") {
+    const r = await executarBin("input", ["roll", String(o.amount)], 15000);
+    if (r.code === 0) return { ok: true, ferramenta: "input roll", direcao: o.direcao, amount: o.amount };
+    return { ok: false, erros: ["input roll falhou: " + (r.stderr || "").trim().slice(0, 80)] };
+  }
+  if (op === "drag") {
+    const r = await executarBin("input", ["swipe", String(o.x), String(o.y), String(o.x2), String(o.y2), "600"], 20000);
+    if (r.code === 0) return { ok: true, ferramenta: "input swipe", de: [o.x, o.y], para: [o.x2, o.y2] };
+    return { ok: false, erros: ["input swipe falhou: " + (r.stderr || "").trim().slice(0, 80)] };
+  }
+  return { ok: false, erros: ["operação de mouse não suportada no Termux: " + op] };
+}
+
+// ---------------------------------------------------------------- macOS
+async function mouseMac(op, o) {
+  // AppleScript (System Events) faz clique por coordenada; mover o cursor
+  // sem clicar exige o cliclick (brew install cliclick).
+  if (op === "position") {
+    const r = await executarBin("cliclick", ["p"], 10000);
+    if (r.code === 0) {
+      const nums = (r.stdout.match(/-?\d+/g) || []).map(Number);
+      if (nums.length >= 2) return { ok: true, ferramenta: "cliclick", x: nums[0], y: nums[1] };
+    }
+    return { ok: false, erros: ["no macOS a posição do mouse exige o cliclick (brew install cliclick)"] };
+  }
+  if (op === "move") {
+    const r = await executarBin("cliclick", ["m:" + o.x + "," + o.y], 10000);
+    if (r.code === 0) return { ok: true, ferramenta: "cliclick", x: o.x, y: o.y };
+    return { ok: false, erros: ["no macOS mover o mouse exige o cliclick (brew install cliclick)"] };
+  }
+  if (op === "click") {
+    const r = await executarBin("cliclick", ["c:" + o.x + "," + o.y], 10000);
+    if (r.code === 0) return { ok: true, ferramenta: "cliclick", botao: o.botao, cliques: o.count };
+    // fallback: AppleScript click at
+    const as = await executarBin(
+      "osascript",
+      ["-e", 'tell application "System Events" to click at {' + o.x + ", " + o.y + "}"],
+      10000
+    );
+    if (as.code === 0) return { ok: true, ferramenta: "osascript", botao: o.botao, cliques: o.count };
+    return { ok: false, erros: ["cliclick e AppleScript falharam: " + (as.stderr || "").trim().split("\n")[0].slice(0, 90)] };
+  }
+  return { ok: false, erros: ["operação de mouse não suportada no macOS: " + op + " (use o cliclick)"] };
+}
+
+// ---------------------------------------------------------------- ação
+async function executarMouse(op, opts) {
+  const plataforma = process.platform;
+  const o = {
+    x: coord("x", opts.x || 0),
+    y: coord("y", opts.y || 0),
+    x2: coord("x2", opts.x2 || 0),
+    y2: coord("y2", opts.y2 || 0),
+    botao: normalizarBotao(opts.button),
+    amount: amountScroll(opts.amount, 3),
+    count: Math.min(10, Math.max(1, Math.round(Number(opts.count) || 1))),
+    direcao: ["up", "down", "left", "right"].includes(String(opts.direction || "").toLowerCase())
+      ? String(opts.direction).toLowerCase()
+      : "down",
+  };
+  // delta com sinal: positivo = scroll para cima, negativo = para baixo
+  o.delta = (o.direcao === "up" ? 1 : o.direcao === "down" ? -1 : 0) * Math.abs(o.amount);
+
+  let r;
+  if (plataforma === "linux") r = await mouseLinux(op, o);
+  else if (plataforma === "win32") r = await mouseWindows(op, o);
+  else if (plataforma === "darwin") r = await mouseMac(op, o);
+  else if (plataforma === "android" || process.env.TERMUX_VERSION) r = await mouseTermux(op, o);
+  else throw new Error("Mouse não suportado nesta plataforma: " + plataforma);
+
+  if (!r.ok) {
+    throw new Error(
+      "Não consegui " + op + " no mouse. Tentativas: " + (r.erros || []).join(" | ") +
+        " — no Linux instale: xdotool (X11) ou ydotool/dotool (Wayland); no Windows não é preciso nada; no Termux use o pacote termux-api"
+    );
+  }
+  const resp = Object.assign({ acao: op, plataforma: plataforma }, r);
+  if (!resp.aviso) {
+    const aviso = avisoSessao(r.ferramenta);
+    if (aviso) resp.aviso = aviso;
+  }
+  return resp;
+}
+
 // ---------------------------------------------------------------- ações (whitelist fixa)
 const ACTIONS = {
   ping: async () => {
@@ -2863,6 +3292,27 @@ const ACTIONS = {
       windowId: args.window_id ? String(args.window_id) : null,
     });
   },
+  mouse_position: async () => {
+    return executarMouse("position", {});
+  },
+  mouse_move: async (args) => {
+    if (args.x === undefined || args.y === undefined)
+      throw new Error('Falta a posição: use {"x":1200,"y":800}');
+    return executarMouse("move", args);
+  },
+  mouse_click: async (args) => {
+    if (args.x === undefined || args.y === undefined)
+      throw new Error('Falta a posição: use {"x":1200,"y":800,"button":"left"}');
+    return executarMouse("click", args);
+  },
+  mouse_scroll: async (args) => {
+    return executarMouse("scroll", args);
+  },
+  mouse_drag: async (args) => {
+    if (args.x === undefined || args.y === undefined || args.x2 === undefined || args.y2 === undefined)
+      throw new Error('Falta o caminho: use {"x":100,"y":100,"x2":800,"y2":600}');
+    return executarMouse("drag", args);
+  },
 };
 
 // ---------------------------------------------------------------- relatório da tarefa (v1.8.0)
@@ -2983,6 +3433,12 @@ function rotuloAcao(a) {
     skill_update: "atualizações da skill",
     god_mode: "mudanças de modo",
     screenshot: "capturas de tela",
+    window_screenshot: "capturas de janela",
+    mouse_position: "leituras da posição do mouse",
+    mouse_move: "movimentações do mouse",
+    mouse_click: "cliques do mouse",
+    mouse_scroll: "rolagens do mouse",
+    mouse_drag: "arrastos do mouse",
     window_screenshot: "capturas de janela",
   };
   return rotulos[a] || 'ações "' + a + '"';

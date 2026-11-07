@@ -12,7 +12,7 @@ npx ponte-local --server https://SEU-RELAY --token SEU_TOKEN --save
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
 [![npm](https://img.shields.io/npm/v/ponte-local?label=npm&color=cb3837)](https://www.npmjs.com/package/ponte-local)
-[![Agente](https://img.shields.io/badge/agente-v1.13.0-3fb950)](agente/agent.js)
+[![Agente](https://img.shields.io/badge/agente-v1.14.0-3fb950)](agente/agent.js)
 [![Relay](https://img.shields.io/badge/relay-v1.5.2-3fb950)](relay/ponte-store.ts)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-3fb950)](https://nodejs.org)
 [![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows%20%7C%20Termux-f59e0b)](#requisitos)
@@ -26,7 +26,7 @@ npx ponte-local --server https://SEU-RELAY --token SEU_TOKEN --save
 
 > **Você é uma IA** (Claude, ChatGPT, Gemini, Cursor, agente de código)? Leia
 > [`SKILL.md`](SKILL.md) primeiro. A skill traz o passo a passo de instalação,
-> o que pedir ao usuário, a tabela das 26 ações e as regras de segurança.
+> o que pedir ao usuário, a tabela das 31 ações e as regras de segurança.
 > Comece pela Regra de Ouro #0: pergunte se o PC é Windows ou Linux.
 
 ## Sumário
@@ -38,7 +38,7 @@ npx ponte-local --server https://SEU-RELAY --token SEU_TOKEN --save
 5. [Os 4 modos do `run_command`](#os-4-modos-do-run_command)
 6. [Requisitos](#requisitos)
 7. [Primeiros passos](#primeiros-passos)
-8. [As 26 ações do agente](#as-26-ações-do-agente)
+8. [As 31 ações do agente](#as-31-ações-do-agente)
 9. [Estrutura do repositório](#estrutura-do-repositório)
 10. [Destaques por versão](#destaques-por-versão)
 11. [Perguntas frequentes](#perguntas-frequentes)
@@ -61,7 +61,7 @@ SSH, nada para configurar no roteador.
 
 | Componente | Onde roda | Tecnologia | Papel |
 |------------|-----------|------------|-------|
-| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 26 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
+| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 31 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
 | **Relay** — `ponte-store.ts` + rotas | na sua VM/servidor | Next.js (API routes) | fila por máquina (lane), sequência persistida em disco, painel de status |
 | **Operador** — `ponte.py` | na sua VM/servidor | Python 3, só biblioteca padrão | CLI para injetar comandos e ler resultados pelo terminal |
 
@@ -113,6 +113,7 @@ SSH, nada para configurar no roteador.
 | **Lixeira com undo** | A IA não apaga nada em definitivo: `delete` e substituições vão para a lixeira do agente, com log JSONL auditável e `undo_last`/`restore`. |
 | **Trava anticatástrofe** | Recusa localmente, antes de executar: fork bomb, `mkfs`, `wipefs`, `dd of=/dev/*`, `shred` em disco, `rm -r` de sistema, `&&` no meio do comando, flags como `--no-preserve-root`, `find -delete`, `xargs` destrutivo, `tee`/redirect para `/dev/*`, script baixado da internet e executado direto no shell, `chmod/chown -R` em pasta do sistema, `rm` com `$VAR` ou `..`. No Windows: `format`, `diskpart`, `cipher /w`, `vssadmin delete shadows`, `rd /s`/`del /s`/`Remove-Item -Recurse` em raiz de drive, `C:\Windows`, `C:\Program Files` ou `$HOME`. |
 | **Consentimento no modo** | `run_command` só funciona nos modos que você religa no seu terminal. O modo deus é a exceção consentida: a IA pergunta no chat e só ativa com o seu aceite. |
+| **Mouse com Aviso** | As ações de mouse usam a ferramenta do sistema (`xdotool` no X11, `user32` no Windows, `ydotool` no Wayland). No Wayland, se cair no `xdotool` (que só mexe no cursor do XWayland), a resposta vem com `aviso` — a IA é instruída a ler e a te avisar. |
 | **Tokens separados** | Agente e operador usam tokens distintos; **uma lane por máquina** (token e fila próprios — comando não atravessa). Tokens nunca vão para o código nem para o repo: só no `.env` do servidor e no `ponte.config.json` de cada PC (permissão 0600). |
 | **Log JSONL** | Toda ação fica registrada em `ponte-log.jsonl`, com resumo e dados de undo. |
 | **Entrega confiável** | Sequência persistida em disco (reiniciar o relay não perde fila), reconnect entrega pendentes com menos de 24 h, resultado reenviado com retry: rede caiu ≠ comando perdido. |
@@ -167,6 +168,36 @@ sudo dnf install ImageMagick xdotool  # Fedora
 > `screenshot_window` captura a janela **em foco** e avisa na resposta. No
 > **X11** e no **Windows** a janela pedida (por `window_title`, `window_class`
 > ou `window_id`) é capturada exatamente.
+
+### Só para as ações de mouse
+
+As ações de mouse (`mouse_move`, `mouse_click`, `mouse_scroll`, `mouse_drag`,
+`mouse_position`) também são **zero dependências npm**, mas dependem do que o
+sistema tem:
+
+| Onde | Precisa de | Observação |
+|------|-----------|------------|
+| **Windows** | nada | PowerShell + `user32.dll` (nativo) |
+| **Linux X11** | `xdotool` | `sudo pacman -S --needed xdotool` |
+| **Linux Wayland** | `ydotool` ou `dotool` | `sudo pacman -S --needed ydotool` — e o usuário precisa estar no grupo `input` e o daemon de pé (`systemctl --user enable --now ydotool`) |
+| **Termux** | `termux-api` | usa o `input` do Android |
+| **macOS** | `cliclick` | `brew install cliclick` (o clique por coordenada funciona pelo AppleScript) |
+
+> ⚠️ **No Wayland o `xdotool` NÃO serve**: ele move só o cursor do XWayland
+> (apps X11), não o cursor real do compositor. O agente tenta o `ydotool`
+> primeiro e, se acabar caindo no `xdotool`, a resposta vem com um aviso
+> (`aviso`) — a IA **deve ler esse aviso** antes de agir.
+
+```bash
+sudo pacman -S --needed xdotool          # X11
+sudo pacman -S --needed ydotool          # Wayland
+sudo usermod -aG input $USER             # permissão do /dev/uinput
+```
+
+> **Cuidado com clique:** um clique pode acionar um botão destrutivo na tela
+> ("Apagar", "Confirmar", "Finalizar compra"). A IA deve **ler a tela antes
+> de clicar** (`screenshot`) e confirmar com o usuário quando o alvo for
+> destrutivo.
 
 ## Primeiros passos
 
@@ -271,7 +302,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 >   console não congela mais o agente) e o `watchdog.bat` religa o agente
 >   sozinho se ele morrer.
 
-## As 26 ações do agente
+## As 31 ações do agente
 
 | Grupo | Ações |
 |-------|-------|
@@ -280,6 +311,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 | **Organizar** | `organize_plan` (propõe, não executa) · `apply_plan` (lote aprovado) · `duplicates` (md5 + espaço recuperável) |
 | **Binários** | `read_binary` (por pedaços, sem teto de tamanho) · `write_binary` (até 8 MB, via `ponte.py pegar`/`enviar`) |
 | **Tela** | `screenshot` (tela inteira) · `screenshot_window` (uma janela, por título/classe/id) |
+| **Mouse** | `mouse_position` (onde está o cursor) · `mouse_move` · `mouse_click` · `mouse_scroll` · `mouse_drag` |
 | **Comando** | `run_command` (com os modos acima) |
 | **Controle** | `god_mode` (liga/desliga as confirmações; a IA só ativa após o seu aceite no chat) · `skill_update` (força o download da SKILL.md; o agente também atualiza sozinho no boot e a cada 60 s) · `task_done` (fecha a tarefa: o agente grava o relatório TXT e abre na tela do usuário) |
 
@@ -318,7 +350,8 @@ ponte-local/
 
 | Componente | Versão | O que trouxe |
 |------------|--------|--------------|
-| Agente | **v1.13.0** (atual) | `screenshot` e `screenshot_window`: print da tela e de uma janela (Linux/Windows/macOS/Termux, zero dependência npm — usa o que a distro já tem); no Wayland a janela em foco é capturada e a resposta avisa |
+| Agente | **v1.14.0** (atual) | `mouse_position`, `mouse_move`, `mouse_click`, `mouse_scroll` e `mouse_drag`: a IA mexe no cursor do usuário (Windows/Linux/macOS/Termux, zero dependência npm). No X11 usa `xdotool`; no Wayland, `ydotool`/`dotool` (o `xdotool` mexe só no cursor do XWayland — a resposta avisa) |
+| Agente | v1.13.0 | `screenshot` e `screenshot_window`: print da tela e de uma janela (Linux/Windows/macOS/Termux, zero dependência npm — usa o que a distro já tem); no Wayland a janela em foco é capturada e a resposta avisa |
 | Agente | v1.12.0 | Continuidade das correções de segurança da v1.11.0 |
 | Agente | v1.11.0 | Auditoria de segurança: trava cobre `&&`, `--no-preserve-root`, `find -delete`, `xargs` destrutivo, `tee`/redirect para `/dev/*`, script baixado e executado direto no bash, `chmod/chown -R` de sistema e `rm` com `$VAR`/`..`; escopo valida `realpath` (symlink não fura a home); credenciais bloqueadas para leitura remota; timeout mata o grupo de processos; token aceito via `PONTE_AGENT_TOKEN`; config com permissão 0600 |
 | Agente | v1.10.x | Relatório obrigatório blindado (v1.10.0/1.10.5); logo no terminal; Termux/Android (v1.10.1); largura real do terminal (v1.10.4) |
