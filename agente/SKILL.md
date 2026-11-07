@@ -187,6 +187,70 @@ extensão — `curl` sem `.exe` pode ser um alias do `Invoke-WebRequest`).
 
 **Windows: Node instalado agora? Feche e reabra o PowerShell antes de seguir.** `winget` e o instalador do nodejs.org atualizam o PATH do sistema, mas janelas de terminal já abertas continuam sem enxergar o `node` — o comando só passa a existir para janelas NOVAS. Peça ao usuário para fechar TODAS as janelas do PowerShell e abrir uma nova antes de qualquer passo seguinte.
 
+### Tirar print da tela — o agente PRECISA ENSINAR o usuário a instalar
+
+As ações `screenshot` e `screenshot_window` **não funcionam sozinhas**: elas
+usam uma ferramenta de captura que a distro do usuário precisa ter. O resto
+do agente é zero-dependências, mas a captura não é.
+
+**REGRA:** se a IA for usar `screenshot`/`screenshot_window` e a ação
+voltar com erro de "ferramenta ausente" (ou `Não consegui capturar a tela`),
+a IA **DEVE** pedir ao usuário para instalar a ferramenta — nunca fingir que
+capturou, nunca tentar `run_command` para contornar.
+
+No **Windows** não é preciso instalar nada: PowerShell + System.Drawing são
+nativos. No **Linux** escolha conforme a sessão gráfica:
+
+| Sessão | Pacote | Comando | Janela por título? |
+|--------|--------|---------|--------------------|
+| X11 (qualquer distro) | `imagemagick` | `import` | ✅ sim (com `xdotool`) |
+| X11 | `scrot` | `scrot` | ❌ só tela inteira |
+| X11 | `maim` | `maim` | ❌ só tela inteira |
+| Wayland/KDE | `spectacle` | `spectacle` | janela em foco |
+| Wayland/Hyprland | `hyprshot` | `hyprshot` | janela em foco |
+| Wayland/GNOME | `gnome-screenshot` | `gnome-screenshot` | janela em foco |
+| Termux/Android | `termux-api` | `termux-screenshot` | ❌ |
+
+**Comandos para o usuário colar** (escolha UM conforme a distro):
+
+```bash
+# Arch/CachyOS
+sudo pacman -S --needed imagemagick xdotool
+
+# Debian/Ubuntu
+sudo apt install -y imagemagick xdotool
+
+# Fedora
+sudo dnf install -y ImageMagick xdotool
+
+# openSUSE
+sudo zypper install -y imagemagick xdotool
+```
+
+**Como descobrir a sessão gráfica do usuário** (X11 ou Wayland) — peça para
+ele rodar:
+
+```bash
+echo $XDG_SESSION_TYPE
+```
+
+Se voltar `wayland`, use a linha do Wayland da tabela; se voltar `x11`, use
+a do X11.
+
+**Diga assim ao usuário:** "para eu tirar print da tela, seu sistema precisa
+de uma ferramenta de captura — no seu caso é `sudo pacman -S --needed
+imagemagick xdotool`. É do sistema, não muda nada no seu projeto. Quer que
+eu pule essa parte e siga sem print?"
+
+⚠️ **No Wayland** o compositor não expõe as janelas de forma genérica: a
+`screenshot_window` captura a janela **em foco** e avisa em `janela.aviso`.
+No X11 e no Windows a janela pedida (`window_title`/`window_class`/
+`window_id`) sai exata. Se o usuário pedir "print da janela do Firefox" e
+estiver no Wayland, diga isso ANTES de mandar a ação.
+
+⚠️ **Tela grande**: 4K em PNG passa de 9 MB e a ponte recusa. Use
+`{"format":"jpg","quality":60}` — fica ~10× menor.
+
 No **servidor onde VOCÊ roda** (VM, container, seu próprio servidor):
 
 - Node.js 18+ (para o relay Next.js) e Python 3 (opcional, para o operador CLI)

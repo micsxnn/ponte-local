@@ -8,7 +8,8 @@
  * backticks, pipes para interpretadores, xargs de destruição, aliases PS).
  * Sem rede além do próprio relay.
  *
- *   node agent.js --server https://SEU-LINK --token SEU_TOKEN --save
+ *   npx ponte-local --server https://SEU-LINK --token SEU_TOKEN --save
+ *   (ou, com o agent.js na mão: node agent.js --server ... --token ... --save)
  *
  * Garantias:
  *  - Escopo: somente a sua home (pastas sensíveis bloqueadas)
@@ -94,13 +95,36 @@ const { execFile, exec } = require("child_process");
 
 const VERSION = "1.13.0";
 const REQUEST_TIMEOUT_MS = 15000;
+
+// SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
+// Via npx isso é ~/.npm/_npx/<hash>/node_modules/... — efêmera! Então
+// NADA que o agente produz (config, log, relatório, skill baixada) pode
+// morar aqui: ia sumir no próximo `npx` com hash diferente.
 const SCRIPT_DIR = __dirname;
-const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
-const LOG_FILE = path.join(SCRIPT_DIR, "ponte-log.jsonl");
-const RELATORIO_FILE = path.join(SCRIPT_DIR, "relatorio-ponte.txt");
+
+// DATA_DIR = pasta do USUÁRIO, persistente. Config (com o token), log de
+// auditoria, relatório da tarefa e a SKILL.md baixada moram aqui.
+// Padrão: ~/ponte-agent (a mesma pasta da instalação manual) — ou
+// $PONTE_HOME, se o usuário preferir outro lugar.
+const DATA_DIR = (() => {
+  const env = process.env.PONTE_HOME;
+  if (env) return path.resolve(String(env));
+  return path.join(os.homedir(), "ponte-agent");
+})();
+
+// garante que a pasta existe (0700: o token mora ali dentro)
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+} catch (_) {
+  /* sem permissão: os writes vão falhar com mensagem própria */
+}
+
+const CONFIG_FILE = path.join(DATA_DIR, "ponte.config.json");
+const LOG_FILE = path.join(DATA_DIR, "ponte-log.jsonl");
+const RELATORIO_FILE = path.join(DATA_DIR, "relatorio-ponte.txt");
 const SKILL_URL =
   "https://raw.githubusercontent.com/micsxnn/ponte-local/main/SKILL.md";
-const SKILL_FILE = path.join(SCRIPT_DIR, "SKILL.md");
+const SKILL_FILE = path.join(DATA_DIR, "SKILL.md");
 const SKILL_CHECK_MS = 60 * 1000; // no boot + a cada 60 s
 const SKILL_BACKOFF_MAX_MS = 15 * 60 * 1000; // teto do backoff em falhas seguidas
 
@@ -485,11 +509,15 @@ function loadConfig(cli) {
   if (!c.server)
     fail(
       "Falta o servidor. Rode:\n" +
-        "  node agent.js --server https://SEU-LINK-DE-PREVIEW --token SEU_TOKEN --save\n" +
+        "  npx ponte-local --server https://SEU-LINK-DE-PREVIEW --token SEU_TOKEN --save\n" +
+        "  (ou, se você tem o agent.js na mão: node agent.js --server ... --token ... --save)\n" +
         "(link e token estão no chat)"
     );
   if (!c.token)
-    fail("Falta o token. Pegue-o no chat e rode de novo com --token SEU_TOKEN --save");
+    fail(
+      "Falta o token. Pegue-o no chat e rode de novo com --token SEU_TOKEN --save:\n" +
+        "  npx ponte-local --server https://SEU-LINK --token SEU_TOKEN --save"
+    );
   if (!/^https?:\/\//i.test(c.server)) c.server = "https://" + c.server;
   c.server = String(c.server).replace(/\/+$/, "");
   c.home = c.home ? path.resolve(String(c.home)) : os.homedir();
@@ -510,21 +538,35 @@ function loadConfig(cli) {
 }
 
 function saveConfig(c) {
-  fs.writeFileSync(
-    CONFIG_FILE,
-    JSON.stringify({
-      server: c.server,
-      token: c.token,
-      home: c.home,
-      run: !!c.run,
-      auto: !!c.auto,
-      godMode: !!c.godMode,
-      godModeDeclined: !!c.godModeDeclined,
-    }),
-    { encoding: "utf8", mode: 0o600 } // token em texto plano: só o dono lê
-    // (v1.12.0: as opções iam parar no JSON.stringify e o arquivo nascia 0644;
-    //  o chmod do boot consertava na releitura — agora nasce certo)
-  );
+  // v1.13.0: a config mora na pasta de DADOS do usuário (fora do pacote
+  // npx). Se a escrita falhar, o erro precisa aparecer — antes a exceção
+  // subia e era engolida pelo uncaughtException, e o modo deus "sumia"
+  // sem ninguém perceber.
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  } catch (_) {}
+  try {
+    fs.writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({
+        server: c.server,
+        token: c.token,
+        home: c.home,
+        run: !!c.run,
+        auto: !!c.auto,
+        godMode: !!c.godMode,
+        godModeDeclined: !!c.godModeDeclined,
+      }),
+      { encoding: "utf8", mode: 0o600 } // token em texto plano: só o dono lê
+      // (v1.12.0: as opções iam parar no JSON.stringify e o arquivo nascia 0644;
+      //  o chmod do boot consertava na releitura — agora nasce certo)
+    );
+    return true;
+  } catch (e) {
+    log("ERRO ao gravar a config em " + CONFIG_FILE + ": " + (e && e.message));
+    log("A ponte NÃO vai lembrar do servidor/token no próximo boot. Verifique as permissões dessa pasta.");
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -601,8 +643,19 @@ const CAMINHOS_PROTEGIDOS = new Set([path.resolve(CONFIG_FILE), path.resolve(LOG
 // família do log (v1.12.0): a rotação cria ponte-log.jsonl.old — proteja o
 // prefixo inteiro, não só o nome exato (o .old escapava da leitura remota)
 const LOG_PREFIXO_PROTEGIDO = path.join(path.dirname(path.resolve(LOG_FILE)), "ponte-log.jsonl");
+// v1.13.0: a pasta de DADOS do agente (config, log, relatório, skill
+// baixada) é inteira bloqueada para leitura remota. Antes os caminhos
+// protegidos saíam de __dirname — via npx isso aponta para o cache
+// efêmero e a proteção não cobria nada.
+const DATA_DIR_RESOLVIDO = path.resolve(DATA_DIR);
 function caminhoProtegido(rp) {
-  return CAMINHOS_PROTEGIDOS.has(rp) || String(rp).startsWith(LOG_PREFIXO_PROTEGIDO);
+  const r = path.resolve(rp);
+  return (
+    CAMINHOS_PROTEGIDOS.has(r) ||
+    String(r).startsWith(LOG_PREFIXO_PROTEGIDO) ||
+    r === DATA_DIR_RESOLVIDO ||
+    r.startsWith(DATA_DIR_RESOLVIDO + path.sep)
+  );
 }
 
 function assertAllowed(p) {
@@ -1647,7 +1700,7 @@ function arquivoImagem(caminho) {
 
 // caminho temporário fora da home (não é arquivo do usuário)
 function caminhoTemp(sufixo) {
-  const dir = os.tmpdir && os.tmpdir() ? os.tmpdir() : SCRIPT_DIR;
+  const dir = os.tmpdir && os.tmpdir() ? os.tmpdir() : DATA_DIR;
   return path.join(dir, "ponte-shot-" + sufixo + "-" + process.pid + "-" + Date.now());
 }
 
@@ -2713,7 +2766,7 @@ const ACTIONS = {
   run_command: async (args) => {
     if (!cfg.run)
       throw new Error(
-        "run_command DESLIGADO. No terminal do agente: Ctrl+C e religue com node agent.js --auto --save (autônomo) ou node agent.js --allow-run --save (supervisionado)"
+        "run_command DESLIGADO. No terminal do agente: Ctrl+C e religue com npx ponte-local --auto --save (autônomo) ou npx ponte-local --allow-run --save (supervisionado)"
       );
     const cmdline = String(args.command == null ? "" : args.command).trim();
     if (!cmdline) throw new Error("Comando vazio");
@@ -2859,10 +2912,10 @@ function fecharRelatorioAnterior() {
   fecharJanelaRelatorio(); // tarefa nova: relatório anterior sai da frente
   let apagados = 0;
   try {
-    for (const f of fs.readdirSync(SCRIPT_DIR)) {
+    for (const f of fs.readdirSync(DATA_DIR)) {
       if (!/^relatorio-ponte.*\.txt$/.test(f)) continue;
       try {
-        fs.unlinkSync(path.join(SCRIPT_DIR, f));
+        fs.unlinkSync(path.join(DATA_DIR, f));
         apagados++;
       } catch (_) {
         /* pode estar aberto no editor — a gravação nova contorna */
@@ -3041,7 +3094,7 @@ function fecharTarefa(resumo, automatico) {
   try {
     escreveArquivoAtomico(destino, texto);
   } catch (_) {
-    destino = path.join(SCRIPT_DIR, "relatorio-ponte-" + Date.now() + ".txt");
+    destino = path.join(DATA_DIR, "relatorio-ponte-" + Date.now() + ".txt");
     try {
       escreveArquivoAtomico(destino, texto);
     } catch (_2) {
@@ -3346,7 +3399,7 @@ async function main() {
       if (recusa) {
         // 401 não é rede: é config errada — aviso forte, sem martelar mudo
         if (avisosToken === 0)
-          log("[x] RELAY RECUSOU O TOKEN (" + e.message + "). Corrija a config:\n    node agent.js --server URL_DO_RELAY --token SEU_TOKEN --save");
+          log("[x] RELAY RECUSOU O TOKEN (" + e.message + "). Corrija a config:\n    npx ponte-local --server URL_DO_RELAY --token SEU_TOKEN --save");
         else if (avisosToken % 12 === 0)
           log("Ainda recusando o token (" + avisosToken + " tentativas) — a config continua errada.");
         avisosToken++;
@@ -3363,6 +3416,12 @@ async function main() {
 if (require.main === module) main().catch((e) => fail(e.message));
 // Exporta apenas para testes automatizados (nada roda quando requerido).
 module.exports = {
+  main,
+  loadConfig,
+  saveConfig,
+  parseArgs,
+  DATA_DIR,
+  CONFIG_FILE,
   dangerCheck,
   caminhoProtegido,
   ALVO_SISTEMA,

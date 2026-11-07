@@ -5,3 +5,8 @@ __pycache__/
 .ponte_since_*
 .env
 ponte-log.jsonl*
+ponte.config.json
+relatorio-ponte*.txt
+node_modules/
+*.tgz
+.DS_Store

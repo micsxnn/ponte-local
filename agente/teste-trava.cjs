@@ -2,6 +2,7 @@
 // Teste da trava anticatástrofe (TDD, v1.13.0) — roda com: node teste-trava.cjs
 // Vetores vindos da auditoria paralela (subagente executou o dangerCheck real).
 const path = require("path");
+const os = require("os");
 const mod = require("./agent.js");
 const { dangerCheck } = mod;
 const caminhoProtegido = mod.caminhoProtegido; // pode não existir na versão velha
@@ -75,11 +76,22 @@ if (typeof caminhoProtegido !== "function") {
   falhas++;
   console.log("FALHOU: caminhoProtegido não está exportado");
 } else {
+  // v1.13.0: config/log/skill/reportagem moram na pasta de DADOS do
+  // usuário (~/ponte-agent ou $PONTE_HOME), NÃO na pasta do pacote — via
+  // npx a pasta do pacote é um cache efêmero. Por isso o teste usa a
+  // mesma DATA_DIR que o agente, e não __dirname.
+  const DATA = mod.DATA_DIR || path.join(__dirname, "..");
   const casos = [
-    [path.join(__dirname, "ponte-log.jsonl"), true],
-    [path.join(__dirname, "ponte-log.jsonl.old"), true],
-    [path.join(__dirname, "ponte.config.json"), true],
-    [path.join(__dirname, "outro.txt"), false],
+    [path.join(DATA, "ponte-log.jsonl"), true],
+    [path.join(DATA, "ponte-log.jsonl.old"), true],
+    [path.join(DATA, "ponte.config.json"), true],
+    [path.join(DATA, "SKILL.md"), true],
+    [path.join(DATA, "relatorio-ponte.txt"), true],
+    // v1.13.0: a pasta de DADOS inteira é bloqueada (config tem token,
+    // log tem histórico) — qualquer arquivo dentro dela é recusado
+    [path.join(DATA, "outro.txt"), true],
+    // fora da pasta de dados, leitura normal continua valendo
+    [path.join(os.homedir(), "Downloads", "foto.png"), false],
   ];
   for (const [p, esperado] of casos) {
     if (caminhoProtegido(path.resolve(p)) !== esperado) {

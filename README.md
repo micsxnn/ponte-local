@@ -163,6 +163,38 @@ sudo dnf install ImageMagick xdotool  # Fedora
 
 ## Primeiros passos
 
+### Caminho 0 — `npx` (o mais rápido)
+
+O agente é um pacote npm. Instale e rode com um comando:
+
+```bash
+npx ponte-local --server https://SEU-RELAY --token SEU_TOKEN --save
+```
+
+Na **primeira vez** o `npx` pergunta a URL do relay e o token e salva a
+config. Depois é só:
+
+```bash
+npx ponte-local
+```
+
+```bash
+npx ponte-local --help      # todas as opções
+npx ponte-local --version   # só a versão
+```
+
+**Onde os dados ficam** (fora do pacote — o cache do `npx` é efêmero):
+
+| Arquivo | Caminho |
+|---------|---------|
+| Config (com o token, permissão 0600) | `~/ponte-agent/ponte.config.json` |
+| Log de auditoria | `~/ponte-agent/ponte-log.jsonl` |
+| Relatório da tarefa | `~/ponte-agent/relatorio-ponte.txt` |
+| SKILL.md baixada | `~/ponte-agent/SKILL.md` |
+
+Defina `PONTE_HOME` para mudar essa pasta. A pasta inteira é **bloqueada
+para leitura remota** (o token mora ali).
+
 ### Caminho 1 — peça para a IA instalar (recomendado)
 
 Abra um chat com sua IA e diga: *"leia
@@ -238,6 +270,9 @@ A referência completa, com argumentos exatos, está na
 
 ```
 ponte-local/
+├── package.json           ← pacote npm: bin "ponte-local" (npx)
+├── bin/
+│   └── ponte-local.js     ← ponto de entrada do npx (config + agente)
 ├── SKILL.md               ← entrada para IAs: instale e opere (comece aqui)
 ├── SECURITY.md            ← como reportar vulnerabilidades em privado
 ├── NOTICE.md              ← avisos de licença de dependências de terceiros

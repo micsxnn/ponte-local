@@ -33,9 +33,31 @@ VM**, sem você precisar copiar nada manualmente.
 
 ## Como rodar (primeira vez)
 
+### Opção A — `npx` (recomendada, não instala nada)
+
+Abra o terminal (Linux) ou o PowerShell (Windows) e cole o comando que te
+passaram no chat — ele já vem com a URL e o token preenchidos:
+
+```bash
+npx ponte-local --server https://SEU-LINK-DE-PREVIEW --token SEU_TOKEN --save
+```
+
+Na primeira vez o `npx` baixa o pacote e roda. O `--save` grava a config, e
+das próximas vezes é só:
+
+```bash
+npx ponte-local
+```
+
+A config fica em `~/ponte-agent/ponte.config.json` (permissão 0600 — só você
+lê). Defina `PONTE_HOME` se quiser mudar essa pasta.
+
+> O `npx` precisa de internet na primeira vez (baixa o pacote) e o Node 18+.
+
+### Opção B — manual (sem `npx`)
+
 1. Abra o terminal na pasta onde está este arquivo (no Windows, PowerShell).
-2. Rode o comando que te passei no chat (ele já vem com servidor e token
-   preenchidos — você não configura nada à mão):
+2. Rode o comando que te passei no chat:
 
    **Linux:**
 
@@ -49,8 +71,7 @@ VM**, sem você precisar copiar nada manualmente.
    node agent.js --server https://SEU-LINK-DE-PREVIEW --token SEU_TOKEN --save
    ```
 
-   O `--save` grava a configuração em `ponte.config.json`, então das próximas
-   vezes é só rodar:
+   O `--save` grava a configuração, então das próximas vezes é só rodar:
 
    ```bash
    node agent.js

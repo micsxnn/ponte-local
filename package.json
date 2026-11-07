@@ -1,0 +1,62 @@
+{
+  "name": "ponte-local",
+  "version": "1.13.0",
+  "description": "Sua IA opera seu PC pelo chat: agente local, zero dependências, relay Next.js que você hospeda.",
+  "keywords": [
+    "ai",
+    "agent",
+    "automation",
+    "remote-control",
+    "bridge",
+    "relay",
+    "llm",
+    "chatgpt",
+    "claude",
+    "gemini"
+  ],
+  "homepage": "https://github.com/micsxnn/ponte-local#readme",
+  "bugs": {
+    "url": "https://github.com/micsxnn/ponte-local/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/micsxnn/ponte-local.git"
+  },
+  "license": "MIT",
+  "author": "MicaelSanPedro <sanpedromicael@gmail.com> (https://github.com/micsxnn)",
+  "bin": {
+    "ponte-local": "bin/ponte-local.js"
+  },
+  "files": [
+    "bin/",
+    "agente/agent.js",
+    "agente/LEIA-ME.md",
+    "agente/SKILL.md",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md",
+    "SECURITY.md",
+    "SKILL.md"
+  ],
+  "scripts": {
+    "test": "node agente/teste-trava.cjs",
+    "test:trava": "node agente/teste-trava.cjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux",
+    "win32",
+    "darwin",
+    "android"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

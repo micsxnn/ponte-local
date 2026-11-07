@@ -351,6 +351,22 @@ Sem as três, o agente do usuário vai pollar para o nada — ou instalar um
 
 ### Passo 4 — Instalar o agente NA MÁQUINA do usuário
 
+**Duas formas.** Prefira o `npx` (não instala nada, roda direto):
+
+```bash
+# FORMA npx (recomendada) — o pacote é baixado e executado na hora
+npx ponte-local --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --auto --save
+```
+
+Na primeira vez o `npx` pergunta a URL e o token (se não vierem nas flags) e
+grava a config em `~/ponte-agent/ponte.config.json` (0600). Depois é só
+`npx ponte-local`. Os dados (config, log, relatório, skill) ficam NESSA pasta
+— fora do pacote, porque o cache do `npx` é efêmero. `PONTE_HOME` muda o
+lugar.
+
+A **forma manual** (baixar o `agent.js` e rodar com `node`) continua valendo
+e está logo abaixo.
+
 **Pré-requisitos no PC do usuário:** Node.js 18+ e um terminal. Confira/instale:
 
 | SO/Distro     | Comando para instalar |
@@ -387,6 +403,21 @@ sudo dnf install -y ImageMagick xdotool        # Fedora
 ⚠️ **No Wayland** o compositor não expõe as janelas de forma genérica: a
 `screenshot_window` captura a janela **em foco** e avisa em `janela.aviso`.
 No X11 e no Windows a janela pedida é capturada exata.
+
+**REGRA DA IA — a captura depende do usuário instalar uma ferramenta.** As
+ações `screenshot`/`screenshot_window` usam o que a distro tem; se a ação
+voltar com "Não consegui capturar a tela" (ferramenta ausente), a IA **DEVE**:
+
+1. **perguntar ao usuário** qual a distro e a sessão gráfica
+   (`echo $XDG_SESSION_TYPE` → `x11` ou `wayland`);
+2. **mandar o comando de instalação** da tabela acima (NUNCA inventar
+   pacote: `import` é do `imagemagick`, `scrot` é do `scrot`);
+3. **esperar a instalação** e só então repetir a ação;
+4. **nunca** contornar com `run_command` e **nunca** dizer que capturou
+   sem ter capturado.
+
+Ofereça caminho sem print: "se preferir não instalar nada, eu sigo sem
+tirar print — funciona igual".
 
 ⚠️ **Windows: Node instalado AGORA? Feche TODAS as janelas do PowerShell e
 abra uma NOVA antes de seguir.** O PATH novo não entra em janelas que já
