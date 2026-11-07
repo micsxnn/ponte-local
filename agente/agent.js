@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.12.0 (Windows + Linux)
+ * Ponte Local — Agente v1.13.0 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -61,6 +61,16 @@
  *    TTY sem "columns" usa getWindowSize(); piso 20 contra degenerescência;
  *    cap 100 em ultra-wide; pipe/arquivo segue no padrão 80.
  *
+ *  - Screenshot (v1.13.0): as ações screenshot e screenshot_window tiram
+ *    print da tela do usuário e devolvem a imagem em base64. ZERO dependência
+ *    npm: o agente usa o que a distro JÁ traz — no Linux tenta import
+ *    (ImageMagick), scrot, maim, gnome-screenshot, spectacle e grim; no
+ *    Windows usa PowerShell + System.Drawing (nativo, sempre presente); no
+ *    macOS usa screencapture; no Termux usa termux-screenshot. No X11 a
+ *    janela pedida (por id, título ou classe) é capturada exatamente; no
+ *    Wayland o compositor não expõe isso de forma genérica, então a janela
+ *    EM FOCO é capturada e a resposta avisa. O título da janela vem da IA
+ *    e NUNCA entra num shell (execFile com array de args) — sem injeção.
  *  - Segurança v1.11.0 (audit com subagentes + skills security-review/
  *    security-and-hardening): trava anticatástrofe cobre && no meio do
  *    comando, flags com hífen interno (--no-preserve-root), find -delete,
@@ -82,7 +92,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec } = require("child_process");
 
-const VERSION = "1.12.0";
+const VERSION = "1.13.0";
 const REQUEST_TIMEOUT_MS = 15000;
 const SCRIPT_DIR = __dirname;
 const CONFIG_FILE = path.join(SCRIPT_DIR, "ponte.config.json");
@@ -1549,6 +1559,542 @@ function salvarGodMode(on) {
   saveConfig(cfg);
 }
 
+// ------------------------------------------------------- screenshot (v1.13.0)
+// A IA pede um print da tela do usuário. O agente continua com ZERO
+// dependências npm: o que faz o trabalho é o que a distro JÁ traz.
+// Cada plataforma tem uma lista de candidatos, tentados em ordem até um
+// produzir um PNG de verdade:
+//
+//  - Linux (X11):     import (ImageMagick) · scrot · maim · gnome-screenshot
+//  - Linux (Wayland): grim · gnome-screenshot (portal) · spectacle · import
+//  - Windows:         PowerShell + System.Drawing (nativo, sempre presente)
+//  - macOS:           screencapture (nativo)
+//  - Termux/Android:  termux-screenshot (pacote termux-api)
+//
+// O título da janela vem da IA e NUNCA entra num shell: tudo roda via
+// execFile com array de argumentos (sem shell), então não existe injeção
+// de comando possível pelo título.
+
+function normalizarFormato(f) {
+  const s = String(f == null ? "png" : f).toLowerCase();
+  return s === "jpg" || s === "jpeg" ? "jpg" : "png";
+}
+
+// Teto do base64 no resultado: o relay recusa acima de ~10,5 MB e o
+// histórico em disco corta payloads grandes. Pedir jpg resolve.
+const SCREENSHOT_MAX_BASE64 = 9000000;
+
+// roda um binário SEM shell (execFile + array de args)
+function executarBin(bin, args, timeoutMs) {
+  return new Promise((resolve) => {
+    execFile(
+      bin,
+      args,
+      { timeout: timeoutMs || 20000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+      (err, stdout, stderr) => {
+        resolve({
+          code: err && typeof err.code === "number" ? err.code : err ? 1 : 0,
+          // "ENOENT" = o binário não existe na máquina (ferramenta ausente)
+          faltaBinario: !!err && err.code === "ENOENT",
+          stdout: String(stdout || ""),
+          stderr: String(stderr || ""),
+        });
+      }
+    );
+  });
+}
+
+// mesma coisa, mas devolvendo bytes crus (termux-screenshot solta PNG no stdout)
+function executarBinBuf(bin, args, timeoutMs) {
+  return new Promise((resolve) => {
+    execFile(
+      bin,
+      args,
+      { timeout: timeoutMs || 20000, maxBuffer: 32 * 1024 * 1024, encoding: "buffer", windowsHide: true },
+      (err, stdout, stderr) => {
+        resolve({
+          code: err && typeof err.code === "number" ? err.code : err ? 1 : 0,
+          stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0),
+          stderr: Buffer.isBuffer(stderr) ? stderr.toString("utf8") : String(stderr || ""),
+        });
+      }
+    );
+  });
+}
+
+function ehPng(buf) {
+  return !!buf && buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+}
+
+function ehJpg(buf) {
+  return !!buf && buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+}
+
+// lê o arquivo, apaga e devolve só se for imagem de verdade
+function arquivoImagem(caminho) {
+  let buf = null;
+  try {
+    buf = fs.readFileSync(caminho);
+  } catch (_) {
+    buf = null;
+  }
+  try {
+    fs.unlinkSync(caminho);
+  } catch (_) {}
+  if (ehPng(buf) || ehJpg(buf)) return buf;
+  return null;
+}
+
+// caminho temporário fora da home (não é arquivo do usuário)
+function caminhoTemp(sufixo) {
+  const dir = os.tmpdir && os.tmpdir() ? os.tmpdir() : SCRIPT_DIR;
+  return path.join(dir, "ponte-shot-" + sufixo + "-" + process.pid + "-" + Date.now());
+}
+
+// ---------------------------------------------------------------- Linux
+async function capturarLinuxTela(destino) {
+  const tentativas = [
+    ["import", ["-window", "root", destino]],
+    ["scrot", ["-q", "100", destino]],
+    ["maim", [destino]],
+    ["gnome-screenshot", ["-f", destino]],
+    ["spectacle", ["-b", "-n", "-o", destino]],
+    ["grim", [destino]],
+  ];
+  const erros = [];
+  for (const par of tentativas) {
+    const bin = par[0];
+    const args = par[1];
+    const r = await executarBin(bin, args, 25000);
+    if (r.code === 0) {
+      const buf = arquivoImagem(destino);
+      if (buf) return { ok: true, buf: buf, ferramenta: bin };
+      erros.push(bin + ": saiu sem gerar imagem válida");
+    } else {
+      const msg = (r.stderr || r.stdout || "falhou").trim().split("\n")[0].slice(0, 100);
+      erros.push(bin + ": " + msg);
+    }
+  }
+  return { ok: false, erros: erros };
+}
+
+async function janelasLinux() {
+  const r = await executarBin("wmctrl", ["-l"], 10000);
+  if (r.code !== 0) return [];
+  const out = [];
+  for (const linha of r.stdout.split("\n")) {
+    const m = linha.trim().match(/^(0x[0-9a-fA-F]+)\s+(-?\d+)\s+(\S+)\s+(.*)$/);
+    if (m) out.push({ id: m[1], titulo: m[4] });
+  }
+  return out;
+}
+
+// xdotool devolve id DECIMAL; o ImageMagick espera o id X11 (que o wmctrl
+// mostra em hex). Converte para hex — os dois são o mesmo número.
+function idParaHex(id) {
+  const s = String(id || "").trim();
+  if (!s) return null;
+  if (s.toLowerCase().startsWith("0x")) return s;
+  const n = Number(s);
+  if (!isFinite(n)) return null;
+  return "0x" + n.toString(16);
+}
+
+// Procura a janela pedida. No X11 dá para achar pelo título/classe e
+// capturar o ID exato. No Wayland o compositor não expõe isso de forma
+// genérica — aí o melhor é a janela EM FOCO (spectacle -a / hyprshot).
+async function acharJanelaLinux(opts) {
+  if (opts.windowId) {
+    const hex = idParaHex(opts.windowId);
+    return hex ? { id: hex, titulo: null } : null;
+  }
+  if (opts.windowTitle) {
+    // xdotool (X11) e kdotool (KDE/Wayland) fazem a mesma busca
+    for (const busca of [
+      ["xdotool", ["search", "--name", opts.windowTitle]],
+      ["kdotool", ["search", "--name", opts.windowTitle]],
+    ]) {
+      const r = await executarBin(busca[0], busca[1], 10000);
+      if (r.code === 0) {
+        const primeiro = r.stdout.trim().split("\n")[0];
+        const hex = idParaHex(primeiro);
+        if (hex) return { id: hex, titulo: opts.windowTitle, via: busca[0] };
+      }
+    }
+    // wmctrl (X11): id em hexadecimal, casa o título sem diferenciar caixa
+    const janelas = await janelasLinux();
+    const alvo = opts.windowTitle.toLowerCase();
+    const achada = janelas.find((j) => j.titulo.toLowerCase().indexOf(alvo) >= 0);
+    if (achada) return { id: achada.id, titulo: achada.titulo, via: "wmctrl" };
+  }
+  if (opts.windowClass) {
+    for (const busca of [
+      ["xdotool", ["search", "--class", opts.windowClass]],
+      ["kdotool", ["search", "--class", opts.windowClass]],
+    ]) {
+      const r = await executarBin(busca[0], busca[1], 10000);
+      if (r.code === 0) {
+        const primeiro = r.stdout.trim().split("\n")[0];
+        const hex = idParaHex(primeiro);
+        if (hex) return { id: hex, titulo: null, via: busca[0] };
+      }
+    }
+  }
+  // sem filtro → a janela que está em foco
+  for (const bin of ["xdotool", "kdotool"]) {
+    const r = await executarBin(bin, ["getactivewindow"], 10000);
+    if (r.code === 0) {
+      const hex = idParaHex(r.stdout.trim());
+      if (hex) return { id: hex, titulo: null, via: bin };
+    }
+  }
+  return null;
+}
+
+// Captura a janela pedida. Duas rotas:
+//  1) achou o ID (X11) → ImageMagick captura SÓ aquela janela
+//  2) não achou (Wayland) → captura a janela EM FOCO e avisa na resposta
+async function capturarLinuxJanela(destino, opts) {
+  const erros = [];
+  const janela = await acharJanelaLinux(opts);
+
+  if (janela) {
+    const r = await executarBin("import", ["-window", janela.id, destino], 25000);
+    if (r.code === 0) {
+      const buf = arquivoImagem(destino);
+      if (buf) return { ok: true, buf: buf, ferramenta: "import", janela: janela };
+      erros.push("import: saiu sem gerar imagem válida");
+    } else {
+      erros.push("import: " + (r.stderr || r.stdout || "falhou").trim().split("\n")[0].slice(0, 90));
+    }
+  } else {
+    erros.push("nenhuma janela localizada por id/título/classe");
+  }
+
+  // Wayland (KDE/Hyprland): a janela em foco
+  for (const par of [
+    ["spectacle", ["-a", "-b", "-n", "-o", destino]],
+    ["hyprshot", ["-m", "active", "-o", destino]],
+  ]) {
+    const r = await executarBin(par[0], par[1], 25000);
+    if (r.code === 0) {
+      const buf = arquivoImagem(destino);
+      if (buf) {
+        return {
+          ok: true,
+          buf: buf,
+          ferramenta: par[0] + " (janela em foco)",
+          janela: {
+            titulo: null,
+            modo: "janela-em-foco",
+            aviso: opts.windowTitle
+              ? "Wayland não permite capturar uma janela pelo título: foi capturada a janela EM FOCO"
+              : "capturada a janela em foco",
+          },
+        };
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    erros: erros.concat([
+      "Wayland: spectre a janela em foco com spectacle/hyprshot (instale um deles)",
+      "X11: instale xdotool + imagemagick para capturar por título",
+    ]),
+  };
+}
+
+// ---------------------------------------------------------------- Windows
+// O script vai para um .ps1 em arquivo: sem escapamento de aspas no comando
+// e sem risco de o título da janela virar código.
+const PS_CAPTURA = [
+  "param([string]$Out,[string]$Title,[string]$Hwnd,[string]$Format,[int]$Quality,[string]$Modo)",
+  "$ErrorActionPreference = 'Stop'",
+  "Add-Type -AssemblyName System.Windows.Forms",
+  "Add-Type -AssemblyName System.Drawing",
+  "$src = @'",
+  "using System;",
+  "using System.Text;",
+  "using System.Runtime.InteropServices;",
+  "public class PonteWin {",
+  "  public delegate bool EnumProc(IntPtr h, IntPtr l);",
+  "  [DllImport(\"user32.dll\")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);",
+  "  [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);",
+  "  [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr h);",
+  "  [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr h, out RECT r);",
+  "  [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();",
+  "  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }",
+  "}",
+  "'@",
+  "Add-Type -TypeDefinition $src",
+  "function Salvar-Img($bmp, $path) {",
+  "  if ($Format -eq 'jpg') {",
+  "    $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }",
+  "    $enc = New-Object System.Drawing.Imaging.EncoderParameters 1",
+  "    $enc.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$Quality)",
+  "    $bmp.Save($path, $codec, $enc)",
+  "  } else {",
+  "    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)",
+  "  }",
+  "}",
+  "if ($Modo -ne 'janela') {",
+  "  $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen",
+  "  $bmp = New-Object System.Drawing.Bitmap $vs.Width, $vs.Height",
+  "  $g = [System.Drawing.Graphics]::FromImage($bmp)",
+  "  $g.CopyFromScreen($vs.Left, $vs.Top, 0, 0, $bmp.Size)",
+  "  Salvar-Img $bmp $Out",
+  "  $g.Dispose()",
+  "  $bmp.Dispose()",
+  "  Write-Output ('tela ' + $vs.Width + 'x' + $vs.Height)",
+  "  exit 0",
+  "}",
+  "$script:target = [IntPtr]::Zero",
+  "$script:found = ''",
+  "if ($Hwnd -ne '') {",
+  "  $script:target = [IntPtr]::new([int64]$Hwnd)",
+  "} elseif ($Title -ne '') {",
+  "  $cb = [PonteWin+EnumProc]{",
+  "    param($h, $l)",
+  "    if ([PonteWin]::IsWindowVisible($h)) {",
+  "      $sb = New-Object System.Text.StringBuilder 512",
+  "      [void][PonteWin]::GetWindowText($h, $sb, $sb.Capacity)",
+  "      $t = $sb.ToString()",
+  "      if ($t -ne '' -and $t.IndexOf($Title, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {",
+  "        $script:target = $h",
+  "        $script:found = $t",
+  "        return $false",
+  "      }",
+  "    }",
+  "    return $true",
+  "  }",
+  "  [void][PonteWin]::EnumWindows($cb, [IntPtr]::Zero)",
+  "} else {",
+  "  $script:target = [PonteWin]::GetForegroundWindow()",
+  "}",
+  "if ($script:target -eq [IntPtr]::Zero) { Write-Error 'janela nao encontrada'; exit 2 }",
+  "$r = New-Object PonteWin+RECT",
+  "[void][PonteWin]::GetWindowRect($script:target, [ref]$r)",
+  "$w = $r.Right - $r.Left",
+  "$h = $r.Bottom - $r.Top",
+  "if ($w -le 0 -or $h -le 0) { Write-Error 'janela sem area visivel'; exit 3 }",
+  "$bmp = New-Object System.Drawing.Bitmap $w, $h",
+  "$g = [System.Drawing.Graphics]::FromImage($bmp)",
+  "$g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)",
+  "Salvar-Img $bmp $Out",
+  "$g.Dispose()",
+  "$bmp.Dispose()",
+  "if ($script:found -ne '') { Write-Output $script:found }",
+  "",
+].join("\n");
+
+// Roda o .ps1 no shell do Windows que existir (powershell = PS 5.1, que
+// SEMPRE tem System.Drawing; pwsh = PS 7). O script vai num arquivo, então
+// não existe escapamento de aspas nem o título da janela virar código.
+async function executarPowershell(ps1, params, timeoutMs) {
+  const shells = ["powershell", "pwsh"];
+  let ultimo = null;
+  for (const shell of shells) {
+    const r = await executarBin(
+      shell,
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1].concat(params),
+      timeoutMs || 40000
+    );
+    if (r.code === 0) return { ok: true, stdout: r.stdout, stderr: r.stderr };
+    ultimo = r;
+    // o shell não existe nesta máquina → tenta o próximo
+    if (r.faltaBinario) continue;
+    return { ok: false, stdout: r.stdout, stderr: r.stderr };
+  }
+  return {
+    ok: false,
+    stdout: ultimo ? ultimo.stdout : "",
+    stderr: ultimo ? ultimo.stderr : "nem powershell nem pwsh disponíveis",
+  };
+}
+
+async function capturarWindows(destino, formato, qualidade, opts) {
+  const ps1 = caminhoTemp("captura.ps1");
+  try {
+    fs.writeFileSync(ps1, PS_CAPTURA, "utf8");
+    const titulo = opts.janela ? (opts.windowTitle || "") : "";
+    const hwnd = opts.janela ? (opts.windowId || "") : "";
+    const r = await executarPowershell(
+      ps1,
+      [
+        "-Out", destino,
+        "-Title", titulo,
+        "-Hwnd", hwnd,
+        "-Format", formato,
+        "-Quality", String(qualidade),
+        "-Modo", opts.janela ? "janela" : "tela",
+      ],
+      40000
+    );
+    if (!r.ok) {
+      const msg = (r.stderr || r.stdout || "falhou").trim().split("\n")[0].slice(0, 140);
+      return { ok: false, erros: ["PowerShell/System.Drawing: " + msg] };
+    }
+    const buf = arquivoImagem(destino);
+    if (!buf) return { ok: false, erros: ["PowerShell não gerou imagem válida"] };
+    return { ok: true, buf: buf, ferramenta: "powershell", janela: { titulo: (r.stdout || "").trim() || null } };
+  } catch (e) {
+    return { ok: false, erros: ["falha ao rodar PowerShell: " + (e && e.message ? e.message : String(e))] };
+  } finally {
+    try {
+      fs.unlinkSync(ps1);
+    } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------------- macOS
+async function capturarMacTela(destino) {
+  const r = await executarBin("screencapture", ["-x", "-t", "png", destino], 25000);
+  if (r.code !== 0) {
+    const msg = (r.stderr || r.stdout || "falhou").trim().split("\n")[0].slice(0, 100);
+    return { ok: false, erros: ["screencapture: " + msg] };
+  }
+  const buf = arquivoImagem(destino);
+  if (!buf) return { ok: false, erros: ["screencapture não gerou imagem válida"] };
+  return { ok: true, buf: buf, ferramenta: "screencapture" };
+}
+
+async function capturarMacJanela(destino, opts) {
+  // AppleScript dá o retângulo da janela; o screencapture recorta a área
+  const script = opts.windowTitle
+    ? 'tell application "System Events" to tell (first process whose frontmost is true) to get {position, size} of window 1'
+    : 'tell application "System Events" to tell (first process whose frontmost is true) to get {position, size} of window 1';
+  const r = await executarBin("osascript", ["-e", script], 15000);
+  if (r.code !== 0) {
+    return {
+      ok: false,
+      erros: ["osascript falhou — o macOS pede permissão de Acessibilidade para ler a janela: " + (r.stderr || "").trim().split("\n")[0].slice(0, 100)],
+    };
+  }
+  const nums = (r.stdout.match(/-?\d+/g) || []).map(Number);
+  if (nums.length < 4) return { ok: false, erros: ["não consegui ler o retângulo da janela"] };
+  const x = nums[0];
+  const y = nums[1];
+  const w = nums[2];
+  const h = nums[3];
+  const rr = await executarBin("screencapture", ["-x", "-R" + x + "," + y + "," + w + "," + h, destino], 25000);
+  if (rr.code !== 0) return { ok: false, erros: ["screencapture: " + (rr.stderr || "").trim().split("\n")[0].slice(0, 100)] };
+  const buf = arquivoImagem(destino);
+  if (!buf) return { ok: false, erros: ["screencapture não gerou imagem válida"] };
+  return { ok: true, buf: buf, ferramenta: "screencapture", janela: { retangulo: [x, y, w, h] } };
+}
+
+// ---------------------------------------------------------------- Termux
+async function capturarTermux(destino) {
+  // termux-screenshot solta o PNG no stdout (ou escreve com -o)
+  const r = await executarBinBuf("termux-screenshot", [], 30000);
+  if (r.code === 0 && r.stdout && r.stdout.length > 100 && ehPng(r.stdout)) {
+    return { ok: true, buf: r.stdout, ferramenta: "termux-screenshot" };
+  }
+  const r2 = await executarBin("termux-screenshot", ["-o", destino], 30000);
+  if (r2.code === 0) {
+    const buf = arquivoImagem(destino);
+    if (buf) return { ok: true, buf: buf, ferramenta: "termux-screenshot" };
+  }
+  return {
+    ok: false,
+    erros: ["termux-screenshot falhou — instale o pacote: pkg install termux-api e o app Termux:API da F-Droid"],
+  };
+}
+
+// ---------------------------------------------------------------- JPG
+async function converterParaJpg(pngBuf, destino, qualidade) {
+  // tenta ImageMagick e depois o sips do macOS
+  const orig = destino + ".png";
+  try {
+    fs.writeFileSync(orig, pngBuf);
+  } catch (_) {
+    return null;
+  }
+  const tentativas = [
+    ["convert", [orig, "-quality", String(qualidade), destino]],
+    ["magick", [orig, "-quality", String(qualidade), destino]],
+    ["sips", ["-s", "format", "jpeg", orig, "--out", destino]],
+  ];
+  for (const par of tentativas) {
+    const r = await executarBin(par[0], par[1], 30000);
+    if (r.code === 0) {
+      const buf = arquivoImagem(destino);
+      try {
+        fs.unlinkSync(orig);
+      } catch (_) {}
+      if (buf) return buf;
+    }
+  }
+  try {
+    fs.unlinkSync(orig);
+  } catch (_) {}
+  return null;
+}
+
+// ---------------------------------------------------------------- ação
+async function capturarScreenshot(opts) {
+  const plataforma = process.platform;
+  const formato = normalizarFormato(opts.format);
+  const qualidade = Math.min(100, Math.max(1, Number(opts.quality) || 85));
+  const destino = caminhoTemp(formato === "jpg" ? "shot.jpg" : "shot.png");
+  let r = { ok: false, erros: [] };
+
+  if (plataforma === "linux") {
+    r = opts.janela ? await capturarLinuxJanela(destino, opts) : await capturarLinuxTela(destino);
+  } else if (plataforma === "win32") {
+    r = await capturarWindows(destino, formato, qualidade, opts);
+  } else if (plataforma === "darwin") {
+    r = opts.janela ? await capturarMacJanela(destino, opts) : await capturarMacTela(destino);
+  } else if (plataforma === "android" || process.env.TERMUX_VERSION) {
+    r = await capturarTermux(destino);
+  } else {
+    throw new Error("Screenshot não suportado nesta plataforma: " + plataforma);
+  }
+
+  if (!r.ok) {
+    const dica = opts.janela
+      ? "no Linux instale: xdotool + imagemagick (X11, captura por título) ou spectacle (KDE/Wayland, janela em foco)"
+      : "no Linux instale: scrot · imagemagick · maim · gnome-screenshot · spectacle";
+    throw new Error(
+      "Não consegui capturar a tela. Tentativas: " + (r.erros || []).join(" | ") + " — " + dica
+    );
+  }
+
+  let buf = r.buf;
+  let formatoFinal = ehJpg(buf) ? "jpg" : "png";
+  if (formato === "jpg" && formatoFinal !== "jpg") {
+    const jpg = await converterParaJpg(buf, caminhoTemp("shot.jpg"), qualidade);
+    if (jpg) {
+      buf = jpg;
+      formatoFinal = "jpg";
+    }
+  }
+
+  const base64 = buf.toString("base64");
+  if (base64.length > SCREENSHOT_MAX_BASE64) {
+    throw new Error(
+      "Imagem grande demais para a ponte (" + fmtMB(base64.length) + " em base64) — refaça com format:\"jpg\" e quality menor (ex.: 60)"
+    );
+  }
+
+  const resp = {
+    plataforma: plataforma,
+    formato: formatoFinal,
+    bytes: buf.length,
+    tamanhoBase64: base64.length,
+    dados: base64,
+    ferramenta: r.ferramenta || null,
+  };
+  if (r.janela) resp.janela = r.janela;
+  if (opts.janela && !resp.janela) {
+    // devolve as janelas disponíveis para a IA tentar de novo com o título exato
+    const janelas = await janelasLinux();
+    if (janelas.length) resp.janelasDisponiveis = janelas.slice(0, 40);
+  }
+  return resp;
+}
+
 // ---------------------------------------------------------------- ações (whitelist fixa)
 const ACTIONS = {
   ping: async () => {
@@ -2243,104 +2789,26 @@ const ACTIONS = {
       stdout: corta150k(out.stdout),
       stderr: corta150k(out.stderr),
     };
-  screenshot: async () => {
-    const platform = process.platform;
-    let imagemBase64 = "";
-    if (platform === "linux") {
-      try {
-        const tmpPath = path.join(SCRIPT_DIR, "tmp-screenshot.png");
-        execFile("scrot", ["-q", "100", tmpPath], { timeout: 10000 }, (err) => {
-          if (err) throw err;
-        });
-        await sleep(500);
-        if (fs.existsSync(tmpPath)) {
-          const buf = fs.readFileSync(tmpPath);
-          fs.unlinkSync(tmpPath); // limpa arquivo temporário
-          imagemBase64 = buf.toString("base64");
-        }
-      } catch (e) {
-        throw new Error("Falha ao capturar screenshot: " + (e && e.message ? e.message : String(e)));
-      }
-    } else {
-      throw new Error("Screenshot não suportado nesta plataforma: " + platform);
-    }
-    return { plataforma, dados: imagemBase64, tamanhoBytes: Buffer.byteLength(Buffer.from(imagemBase64, "base64")) };
+  },
+  screenshot: async (args) => {
+    return capturarScreenshot({
+      janela: false,
+      format: args.format,
+      quality: args.quality,
+      windowTitle: null,
+      windowClass: null,
+      windowId: null,
+    });
+  },
   screenshot_window: async (args) => {
-    const platform = process.platform;
-    let imagemBase64 = "";
-    let infoJanela = null;
-    if (platform === "linux") {
-      try {
-        let windowId = args.window_id || null;
-        if (!windowId && args.window_title) {
-          const result = execSync('xdotool search --name "' + args.window_title + '" | head -1', { encoding: 'utf8' }).trim();
-          windowId = result || null;
-        }
-        if (!windowId && args.window_class) {
-          const result = execSync('xdotool search --class "' + args.window_class + '" | head -1', { encoding: 'utf8' }).trim();
-          windowId = result || null;
-        }
-        if (!windowId) {
-          const wmctrl = execSync('wmctrl -l', { encoding: 'utf8' }).split('\n');
-          for (const linha of wmctrl) {
-            const partes = linha.split(/\s+/);
-            if (partes.length >= 2) {
-              const id = partes[0];
-              const titulo = (partes.slice(2).join(' ') || '');
-              if (args.window_title && titulo.toLowerCase().includes(args.window_title.toLowerCase())) {
-                windowId = id;
-                break;
-              }
-            }
-          }
-        }
-        if (windowId) {
-          const tmpPath = path.join(SCRIPT_DIR, "tmp-screenshot-window.png");
-          execSync('import -window ' + windowId + ' ' + tmpPath);
-          if (fs.existsSync(tmpPath)) {
-            const buf = fs.readFileSync(tmpPath);
-            fs.unlinkSync(tmpPath);
-            imagemBase64 = buf.toString("base64");
-            infoJanela = { id: windowId };
-            try {
-              const wmctrl = execSync('wmctrl -l', { encoding: 'utf8' }).split('\n');
-              for (const linha of wmctrl) {
-                const partes = linha.split(/\s+/);
-                if (partes[0] === windowId) {
-                  infoJanela.titulo = partes.slice(2).join(' ');
-                  break;
-                }
-              }
-            } catch (_) {}
-          } else {
-            throw new Error("Janela não encontrada ou captura falhou");
-          }
-        } else {
-          throw new Error("Nenhuma janela encontrada com os critérios fornecidos");
-        }
-      } catch (e) {
-        throw new Error("Falha ao capturar janela: " + (e && e.message ? e.message : String(e)));
-      }
-    } else if (platform === "win32") {
-      try {
-        const tmpPath = path.join(SCRIPT_DIR, "tmp-screenshot-window.png");
-        execSync('powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $list = [System.Windows.Forms.Screen]::AllScreens; foreach($s in $list) { if($s.Primary) { continue } }"', { timeout: 5000 });
-        throw new Error("Screenshot de janela não implementado para Windows neste momento");
-      } catch (e) {
-        if (e.message.includes("não implementado")) throw e;
-        throw new Error("Falha ao capturar janela no Windows: " + (e && e.message ? e.message : String(e)));
-      }
-    } else {
-      throw new Error("Screenshot de janela não suportado nesta plataforma: " + platform);
-    }
-    return { 
-      plataforma, 
-      dados: imagemBase64, 
-      tamanhoBytes: Buffer.byteLength(Buffer.from(imagemBase64, "base64")),
-      janela: infoJanela
-    };
-  },
-  },
+    return capturarScreenshot({
+      janela: true,
+      format: args.format,
+      quality: args.quality,
+      windowTitle: args.window_title ? String(args.window_title) : null,
+      windowClass: args.window_class ? String(args.window_class) : null,
+      windowId: args.window_id ? String(args.window_id) : null,
+    });
   },
 };
 

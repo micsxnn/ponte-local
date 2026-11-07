@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Teste da trava anticatástrofe (TDD, v1.12.0) — roda com: node teste-trava.cjs
+// Teste da trava anticatástrofe (TDD, v1.13.0) — roda com: node teste-trava.cjs
 // Vetores vindos da auditoria paralela (subagente executou o dangerCheck real).
 const path = require("path");
 const mod = require("./agent.js");
@@ -89,9 +89,9 @@ if (typeof caminhoProtegido !== "function") {
   }
 }
 
-if (mod.VERSION !== "1.12.0") {
+if (mod.VERSION !== "1.13.0") {
   falhas++;
-  console.log("FALHOU: VERSION deveria ser 1.12.0, é %s", mod.VERSION);
+  console.log("FALHOU: VERSION deveria ser 1.13.0, é %s", mod.VERSION);
 }
 
 console.log(falhas === 0 ? "PASSOU — trava íntegra (%d vetores de bloqueio + %d de passagem)" : "RESULTADO: %d FALHA(S)", falhas === 0 ? BLOQUEAR.length : falhas, PASSAR.length);

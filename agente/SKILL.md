@@ -476,6 +476,8 @@ aceita ambos os estilos conforme o SO dele.
 | `read_binary` | `{"path":"...","offset":0,"maxBytes":4194304}` | Binário em base64 por pedaços (≤ 6 MB/chamada) — junte os base64 NA ORDEM; o arquivo pode ter qualquer tamanho |
 | `file_info` | `{"path":"..."}` | Tipo REAL do arquivo (magic bytes: png, jpeg, pdf, zip, exe, mp4, sqlite, gzip, iso…) + tamanho + encoding se for texto + dica de como ler |
 | `write_binary` | `{"path":"...","base64":"...","overwrite":true}` | Grava binário (máx 8 MB) |
+| `screenshot` | `{"format":"png","quality":85}` | Print da TELA INTEIRA, em base64 (`dados`). `format`: `png` (padrão) ou `jpg` (bem menor — use em tela grande). Linux: usa o que a distro já tem (import/scrot/maim/gnome-screenshot/spectacle/grim); Windows: PowerShell + System.Drawing (nativo); macOS: screencapture; Termux: termux-screenshot |
+| `screenshot_window` | `{"window_title":"Firefox","window_class":"","window_id":"","format":"png"}` | Print de UMA janela. Sem argumento: a janela em foco. Por `window_title`/`window_class`/`window_id`: no X11 e no Windows a janela exata; no Wayland o compositor não expõe isso, então a IA recebe a janela em foco e a resposta avisa (`janela.aviso`) |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (abaixo) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | modo deus: liga (APENAS após o usuário aceitar NO CHAT — a IA pergunta, zero prompt no terminal) / desliga (direto) / registra recusa — seção própria abaixo |
 | `skill_update` | `{}` | Força o download da SKILL.md mais recente deste repo; devolve `atualizou`, `de`, `para`, `versaoLocal` (o agente também atualiza sozinho no boot e a cada 60 s) |

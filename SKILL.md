@@ -364,6 +364,30 @@ Sem as três, o agente do usuário vai pollar para o nada — ou instalar um
 Verificação: `node --version` (≥ 18). **Diga assim:** "seu PC precisa do
 Node; cola isso no terminal, demora ~1 min."
 
+**OPCIONAL — só se a IA quiser tirar print da tela** (`screenshot` /
+`screenshot_window`): o resto do agente é zero-dependências, mas a captura
+precisa de uma ferramenta que a distro já traz. No Windows não é preciso
+nada (PowerShell + System.Drawing são nativos). No Linux:
+
+| Sessão | Pacote | Janela por título? |
+|--------|---------|--------------------|
+| X11 | `imagemagick` (+ `xdotool`) | sim |
+| X11 | `scrot` ou `maim` | não (só tela inteira) |
+| Wayland/KDE | `spectacle` | janela em foco |
+| Wayland/Hyprland | `hyprshot` | janela em foco |
+| Wayland/GNOME | `gnome-screenshot` | janela em foco |
+| Termux | `termux-api` | não |
+
+```bash
+sudo pacman -S --needed imagemagick xdotool   # Arch/CachyOS
+sudo apt install -y imagemagick xdotool        # Debian/Ubuntu
+sudo dnf install -y ImageMagick xdotool        # Fedora
+```
+
+⚠️ **No Wayland** o compositor não expõe as janelas de forma genérica: a
+`screenshot_window` captura a janela **em foco** e avisa em `janela.aviso`.
+No X11 e no Windows a janela pedida é capturada exata.
+
 ⚠️ **Windows: Node instalado AGORA? Feche TODAS as janelas do PowerShell e
 abra uma NOVA antes de seguir.** O PATH novo não entra em janelas que já
 estavam abertas — na janela velha, `node agent.js` devolve "o termo node não
@@ -555,6 +579,8 @@ ambos os estilos conforme o SO dele.
 | `read_binary` | `{"path":"...","offset":0,"maxBytes":4194304}` | Binário em base64 por pedaços (≤ 6 MB/pedaço; padrão 4 MB em arquivos grandes) — junte os base64 NA ORDEM |
 | `file_info` | `{"path":"..."}` | Tipo REAL por magic bytes (png, jpeg, pdf, zip, exe, mp4, sqlite, gzip, iso…) + tamanho + encoding se for texto |
 | `write_binary` | `{"path":"...","base64":"...","overwrite":true}` | Grava binário (máx 8 MB) |
+| `screenshot` | `{"format":"png","quality":85}` | Print da TELA INTEIRA, em base64 (`dados`). `format`: `png` (padrão) ou `jpg` (bem menor — use em tela grande). Linux: usa o que a distro já tem (import/scrot/maim/gnome-screenshot/spectacle/grim); Windows: PowerShell + System.Drawing (nativo); macOS: screencapture; Termux: termux-screenshot |
+| `screenshot_window` | `{"window_title":"Firefox","window_class":"","window_id":"","format":"png"}` | Print de UMA janela. Sem argumento: a janela em foco. Por `window_title`/`window_class`/`window_id`: no X11 e no Windows a janela exata; no Wayland o compositor não expõe isso, então a IA recebe a janela em foco e a resposta avisa (`janela.aviso`) |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (§ 4.4) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | Protocolo da Lei 3 |
 | `skill_update` | `{}` | Força o download da SKILL.md deste repo (também roda sozinho no boot e a cada 60 s) |
@@ -690,6 +716,7 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 | Timeout por `run_command` | padrão 3 min; teto 30 min (`timeoutMin`) |
 | stdout/stderr de `run_command` | cortados em 150.000 caracteres cada (maxBuffer 8 MB — stdout maior mata o comando) |
 | Resultado total (agente) | recusado acima de ~10,5 MB ("refine o comando") |
+| `screenshot` / `screenshot_window` | base64 ≤ 9 MB — acima disso use `format:"jpg"` e `quality` menor |
 | `resumo` do `task_done` | 4.000 caracteres |
 | Fila de comandos pendentes | 100 por lane |
 | Histórico de comandos / resultados | 2.000 / 400 |

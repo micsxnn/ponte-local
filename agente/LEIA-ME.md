@@ -19,6 +19,17 @@ VM**, sem você precisar copiar nada manualmente.
   - Linux (Arch/CachyOS): `sudo pacman -S --needed nodejs`
   - Windows: `winget install OpenJS.NodeJS.LTS` (ou instalador do nodejs.org)
   - Windows: instalou o Node agora? **Feche e reabra o PowerShell** antes de rodar o agente — só janelas novas enxergam o `node` no PATH
+- **Só se quiser print da tela** (`screenshot` / `screenshot_window`): o resto
+  do agente não precisa de nada além do Node, mas a captura usa uma
+  ferramenta que a distro já traz.
+  - **Windows:** nada a instalar (PowerShell + System.Drawing são nativos)
+  - **Linux X11:** `sudo pacman -S --needed imagemagick xdotool`
+    (ou `scrot`, ou `maim`)
+  - **Linux Wayland/KDE:** `sudo pacman -S --needed spectacle`
+    (Hyprland: `hyprshot` · GNOME: `gnome-screenshot`)
+  - **Termux:** `pkg install termux-api`
+  - No Wayland a janela em foco é capturada (o compositor não expõe as
+    janelas de forma genérica) — no X11 e no Windows a janela pedida sai exata
 
 ## Como rodar (primeira vez)
 
@@ -124,6 +135,8 @@ No Windows Terminal o problema não existe (não há QuickEdit).
 | `disk_usage`     | Mostra as pastas que mais ocupam espaço                             |
 | `undo_last`      | Desfaz a última ação reversível                                     |
 | `free_space`     | Mostra espaço livre em disco                                        |
+| `screenshot`     | Tira print da tela inteira e devolve a imagem em base64 (`format:"jpg"` deixa bem menor) |
+| `screenshot_window` | Tira print de UMA janela (a que está em foco, ou a que casar com `window_title`/`window_class`/`window_id`) |
 | `run_command`    | Executa um comando de shell. Depende do modo (veja abaixo): **supervisionado** pede `s/N` no terminal; **autônomo** executa direto, exceto padrões catastróficos |
 | `task_done`      | Fecha a tarefa: o agente grava `relatorio-ponte.txt` com o que foi feito (resumo que a IA envia) e abre na sua tela (a IA manda quando conclui) |
 

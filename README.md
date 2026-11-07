@@ -5,7 +5,7 @@
 **Sua IA opera seu PC pelo chat. As travas de segurança rodam no seu PC.**
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
-[![Agente](https://img.shields.io/badge/agente-v1.12.0-3fb950)](agente/agent.js)
+[![Agente](https://img.shields.io/badge/agente-v1.13.0-3fb950)](agente/agent.js)
 [![Relay](https://img.shields.io/badge/relay-v1.5.2-3fb950)](relay/ponte-store.ts)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-3fb950)](https://nodejs.org)
 [![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows%20%7C%20Termux-f59e0b)](#requisitos)
@@ -19,7 +19,7 @@
 
 > **Você é uma IA** (Claude, ChatGPT, Gemini, Cursor, agente de código)? Leia
 > [`SKILL.md`](SKILL.md) primeiro. A skill traz o passo a passo de instalação,
-> o que pedir ao usuário, a tabela das 24 ações e as regras de segurança.
+> o que pedir ao usuário, a tabela das 26 ações e as regras de segurança.
 > Comece pela Regra de Ouro #0: pergunte se o PC é Windows ou Linux.
 
 ## Sumário
@@ -31,7 +31,7 @@
 5. [Os 4 modos do `run_command`](#os-4-modos-do-run_command)
 6. [Requisitos](#requisitos)
 7. [Primeiros passos](#primeiros-passos)
-8. [As 24 ações do agente](#as-24-ações-do-agente)
+8. [As 26 ações do agente](#as-26-ações-do-agente)
 9. [Estrutura do repositório](#estrutura-do-repositório)
 10. [Destaques por versão](#destaques-por-versão)
 11. [Perguntas frequentes](#perguntas-frequentes)
@@ -54,7 +54,7 @@ SSH, nada para configurar no roteador.
 
 | Componente | Onde roda | Tecnologia | Papel |
 |------------|-----------|------------|-------|
-| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 24 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
+| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 26 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
 | **Relay** — `ponte-store.ts` + rotas | na sua VM/servidor | Next.js (API routes) | fila por máquina (lane), sequência persistida em disco, painel de status |
 | **Operador** — `ponte.py` | na sua VM/servidor | Python 3, só biblioteca padrão | CLI para injetar comandos e ler resultados pelo terminal |
 
@@ -131,6 +131,36 @@ pergunta de novo.
 | **Seu PC** (Windows, Linux ou Termux/Android) | Node.js 18+, `curl` (no Windows, o `curl.exe` nativo do PowerShell) |
 | **VM/servidor da IA** | Node.js 18+ para o relay (Next.js), Python 3 opcional para a CLI |
 
+### Só para as ações de screenshot
+
+O resto do agente é **zero dependências** — mas tirar print da tela depende
+de uma ferramenta de captura que a distro já traz. Não é preciso instalar
+nada no Windows (PowerShell + System.Drawing são nativos), mas no Linux
+escolha **uma** das opções:
+
+| Sessão | Pacote | Comando | Janela por título? |
+|--------|--------|---------|--------------------|
+| X11 (qualquer distro) | `imagemagick` | `import` | sim (com `xdotool`) |
+| X11 | `scrot` | `scrot` | não (só tela inteira) |
+| X11 | `maim` | `maim` | não |
+| Wayland/KDE | `spectacle` | `spectacle` | janela em foco |
+| Wayland/Hyprland | `hyprshot` | `hyprshot` | janela em foco |
+| Wayland/GNOME | `gnome-screenshot` | `gnome-screenshot` | janela em foco |
+| Termux/Android | `termux-api` | `termux-screenshot` | não |
+
+Comandos:
+
+```bash
+sudo pacman -S imagemagick xdotool   # Arch/CachyOS
+sudo apt install imagemagick xdotool  # Debian/Ubuntu
+sudo dnf install ImageMagick xdotool  # Fedora
+```
+
+> No **Wayland** o compositor não expõe as janelas de forma genérica: a
+> `screenshot_window` captura a janela **em foco** e avisa na resposta. No
+> **X11** e no **Windows** a janela pedida (por `window_title`, `window_class`
+> ou `window_id`) é capturada exatamente.
+
 ## Primeiros passos
 
 ### Caminho 1 — peça para a IA instalar (recomendado)
@@ -189,7 +219,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 >   console não congela mais o agente) e o `watchdog.bat` religa o agente
 >   sozinho se ele morrer.
 
-## As 24 ações do agente
+## As 26 ações do agente
 
 | Grupo | Ações |
 |-------|-------|
@@ -197,6 +227,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 | **Arquivos** | `read_text` (qualquer tamanho, em pedaços) · `write_text` · `mkdir` · `move` · `rename` · `delete` → lixeira · `restore` · `undo_last` |
 | **Organizar** | `organize_plan` (propõe, não executa) · `apply_plan` (lote aprovado) · `duplicates` (md5 + espaço recuperável) |
 | **Binários** | `read_binary` (por pedaços, sem teto de tamanho) · `write_binary` (até 8 MB, via `ponte.py pegar`/`enviar`) |
+| **Tela** | `screenshot` (tela inteira) · `screenshot_window` (uma janela, por título/classe/id) |
 | **Comando** | `run_command` (com os modos acima) |
 | **Controle** | `god_mode` (liga/desliga as confirmações; a IA só ativa após o seu aceite no chat) · `skill_update` (força o download da SKILL.md; o agente também atualiza sozinho no boot e a cada 60 s) · `task_done` (fecha a tarefa: o agente grava o relatório TXT e abre na tela do usuário) |
 
@@ -211,7 +242,7 @@ ponte-local/
 ├── SECURITY.md            ← como reportar vulnerabilidades em privado
 ├── NOTICE.md              ← avisos de licença de dependências de terceiros
 ├── agente/
-│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.12.0)
+│   ├── agent.js           ← o agente inteiro: 1 arquivo, 0 dependências (v1.13.0)
 │   ├── LEIA-ME.md         ← manual do agente no PC do usuário
 │   ├── rodar.sh           ← religa lendo ponte.config.json (Linux)
 │   ├── atualizar.sh       ← baixa a versão nova do agente (Linux)
@@ -232,7 +263,8 @@ ponte-local/
 
 | Componente | Versão | O que trouxe |
 |------------|--------|--------------|
-| Agente | **v1.12.0** (atual) | Continuidade das correções de segurança da v1.11.0 |
+| Agente | **v1.13.0** (atual) | `screenshot` e `screenshot_window`: print da tela e de uma janela (Linux/Windows/macOS/Termux, zero dependência npm — usa o que a distro já tem); no Wayland a janela em foco é capturada e a resposta avisa |
+| Agente | v1.12.0 | Continuidade das correções de segurança da v1.11.0 |
 | Agente | v1.11.0 | Auditoria de segurança: trava cobre `&&`, `--no-preserve-root`, `find -delete`, `xargs` destrutivo, `tee`/redirect para `/dev/*`, script baixado e executado direto no bash, `chmod/chown -R` de sistema e `rm` com `$VAR`/`..`; escopo valida `realpath` (symlink não fura a home); credenciais bloqueadas para leitura remota; timeout mata o grupo de processos; token aceito via `PONTE_AGENT_TOKEN`; config com permissão 0600 |
 | Agente | v1.10.x | Relatório obrigatório blindado (v1.10.0/1.10.5); logo no terminal; Termux/Android (v1.10.1); largura real do terminal (v1.10.4) |
 | Agente | v1.8.0 | Relatório "O QUE FOI FEITO" (sem lista de comandos); `rodar.bat` com QuickEdit off; `watchdog.bat` religa sozinho |
