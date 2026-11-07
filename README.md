@@ -4,11 +4,15 @@
 
 **Sua IA opera seu PC pelo chat. As travas de segurança rodam no seu PC.**
 
-Instale em um comando, sem instalar nada:
+Instale em um comando, sem instalar nada — **no seu PC físico**:
 
 ```bash
-npx ponte-local --server https://SEU-RELAY --token SEU_TOKEN --save
+npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
+
+> Este pacote é **híbrido**: o mesmo `npx` serve a dois lados diferentes.
+> A [IA que opera na VM](#dois-lados-dois-comandos) usa `npx ponte-local
+> skill` — um comando **só de leitura**, que não sobe nada no seu PC.
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
 [![npm](https://img.shields.io/npm/v/ponte-local?label=npm&color=cb3837)](https://www.npmjs.com/package/ponte-local)
@@ -122,9 +126,9 @@ SSH, nada para configurar no roteador.
 
 | Modo | Como ativa | Comportamento |
 |------|------------|---------------|
-| **Desligado** (padrão) | `npx ponte-local` | Só operações de arquivo; a IA não executa comandos. |
-| **Supervisionado** | `npx ponte-local --allow-run --save` | Cada comando aparece no seu terminal; `s`/`N` em 60 s; sem resposta, o agente rejeita. |
-| **Autônomo** | `npx ponte-local --auto --save` | Executa direto (loga `[AUTO] $ cmd`), com a trava anticatástrofe ativa. |
+| **Desligado** (padrão) | `npx ponte-local start` | Só operações de arquivo; a IA não executa comandos. |
+| **Supervisionado** | `npx ponte-local start --allow-run --save` | Cada comando aparece no seu terminal; `s`/`N` em 60 s; sem resposta, o agente rejeita. |
+| **Autônomo** | `npx ponte-local start --auto --save` | Executa direto (loga `[AUTO] $ cmd`), com a trava anticatástrofe ativa. |
 | **modo deus** | A IA pergunta no chat depois de conectar e, com o seu aceite, envia `god_mode {"enabled":true}` | Igual ao autônomo (loga `[deus] $ cmd`); trava, lixeira e log continuam; desliga com `god_mode {"enabled":false}`. |
 
 Os modos supervisionado e autônomo mudam só com um flag digitado por você no
@@ -183,7 +187,7 @@ sistema tem:
 | **Termux** | `termux-api` | usa o `input` do Android |
 | **macOS** | `cliclick` | `brew install cliclick` (o clique por coordenada funciona pelo AppleScript) |
 
-> ⚠️ **No Wayland o `xdotool` NÃO serve**: ele move só o cursor do XWayland
+> ATENCAO: **No Wayland o `xdotool` NÃO serve**: ele move só o cursor do XWayland
 > (apps X11), não o cursor real do compositor. O agente tenta o `ydotool`
 > primeiro e, se acabar caindo no `xdotool`, a resposta vem com um aviso
 > (`aviso`) — a IA **deve ler esse aviso** antes de agir.
@@ -199,6 +203,81 @@ sudo usermod -aG input $USER             # permissão do /dev/uinput
 > de clicar** (`screenshot`) e confirmar com o usuário quando o alvo for
 > destrutivo.
 
+## Dois lados, dois comandos
+
+O `ponte-local` é uma **skill híbrida**: o mesmo pacote npm é usado em dois
+lugares, por dois lados, com escopos **opostos**. Antes de rodar qualquer
+coisa, saiba qual é o seu:
+
+```
+   PC FÍSICO DO USUÁRIO                    VM / SERVIDOR DA IA
+   +--------------------------+            +--------------------------+
+   |  npx ponte-local start   |            |  npx ponte-local skill   |
+   |                          |            |  npx ponte-local acoes   |
+   |  SOBE O AGENTE LOCAL     |   relay    |  SO LEITURA              |
+   |  trava anticatastrofe    |<---------->|  imprime a spec          |
+   |  escopo na home          |   HTTPS    |  imprime o manual das    |
+   |  lixeira + log           |            |  acoes                   |
+   |  abre a ponte            |            |  NAO sobe nada          |
+   +--------------------------+            +--------------------------+
+```
+
+| | **Modo Usuário (host)** | **Modo Agente (remoto)** |
+|---|---|---|
+| **Comando** | `npx ponte-local start` | `npx ponte-local skill` · `npx ponte-local acoes` |
+| **Roda onde** | no PC físico do usuário | na VM / servidor da IA |
+| **O que faz** | sobe o agente, liga a trava, abre a ponte | imprime a especificação e o manual das ações |
+| **Executa algo?** | **SIM** — é o único lado que executa | **NÃO** — é leitura pura |
+| **Grava config?** | sim (`~/ponte-agent/`) | **nunca** |
+| **Abre socket?** | sim (conversa com o relay) | **nunca** |
+| **Quem usa** | o **usuário**, no terminal dele | a **IA**, no chat dela |
+
+### O comando do USUÁRIO (PC físico)
+
+```bash
+npx ponte-local start                                      # usa a config salva
+npx ponte-local start --server URL --token TOKEN --save   # primeira vez
+npx ponte-local start --auto --save                       # modo autônomo
+npx ponte-local start --allow-run --save                  # modo supervisionado
+```
+
+Aqui a **trava anticatástrofe fica ativa**: nenhum `rm -rf` na raiz, nenhum
+`mkfs`, nenhum `dd` em disco, nenhum fork bomb passa. O escopo é a sua
+home, exclusão vai para a lixeira e tudo fica no log. **Este é o único
+comando que executa alguma coisa no seu computador.**
+
+### O comando do AGENTE (VM / remoto)
+
+```bash
+npx ponte-local skill                    # a especificação completa da skill
+npx ponte-local skill operacao           # uma seção só
+npx ponte-local skill --lista            # índice das seções
+npx ponte-local acoes                    # manual das ações (31)
+npx ponte-local acoes mouse_click        # detalhe de UMA ação
+npx ponte-local acoes --json             # todas em JSON, fácil de parsear
+```
+
+A IA **não** sobe servidor, não abre socket, não executa nada e não grava
+config. Ela só lê a spec e monta os comandos que manda pro relay.
+
+> **Atalho:** `npx ponte-local` sem subcomando = `start` (comportamento
+> antigo, pra não quebrar quem já usa). Mas prefira sempre escrever o
+> subcomando — a IA e o usuário não devem confundir o lado.
+
+### O que a IA recebe de cada lado
+
+| Comando | Onde roda | O que devolve |
+|---|---|---|
+| `npx ponte-local start` | PC do usuário | um banner e um agente rodando (nada é "devolvido" para a IA por esse comando) |
+| `npx ponte-local skill` | VM da IA | a spec completa, em texto |
+| `npx ponte-local acoes` | VM da IA | as 31 ações, com args e descrição |
+| `POST /api/ponte/cmd` | via relay | o que a IA **manda** pro PC |
+| `GET /api/ponte/results` | via relay | o que a IA **recebe** do PC |
+
+A IA **nunca** roda `start` na VM: `start` é do usuário. Se a IA precisar
+instalar o agente no PC do usuário, ela **manda o comando** pro usuário
+colar no terminal dele — é o Bloco de Entrega da [SKILL.md](SKILL.md).
+
 ## Primeiros passos
 
 ### Caminho 0 — `npx` (o mais rápido)
@@ -207,23 +286,30 @@ O agente é um pacote npm. **Não precisa instalar nada** — o `npx` baixa e
 roda:
 
 ```bash
-npx ponte-local --server https://SEU-RELAY --token SEU_TOKEN --save
+npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
 
 Na **primeira vez**, se você rodar sem `--server`/`--token`, o `npx` pergunta
 a URL do relay e o token no terminal e salva a config. Depois é só:
 
 ```bash
-npx ponte-local
+npx ponte-local start
 ```
 
-Outras opções:
+Outras opções (todas no lado **usuário**):
 
 ```bash
-npx ponte-local --help      # todas as opções
-npx ponte-local --version   # só a versão
-npx ponte-local --auto --save            # modo autônomo (executa direto)
-npx ponte-local --allow-run --save       # supervisionado (pede s/N)
+npx ponte-local help                        # a ajuda, com os dois lados
+npx ponte-local version                     # só a versão
+npx ponte-local start --auto --save         # modo autônomo (executa direto)
+npx ponte-local start --allow-run --save    # supervisionado (pede s/N)
+```
+
+E o lado **agente** (na VM da IA — só leitura):
+
+```bash
+npx ponte-local skill                       # a especificação da skill
+npx ponte-local acoes                       # o manual das 31 ações
 ```
 
 **Onde os dados ficam** (fora do pacote — o cache do `npx` é efêmero e o
@@ -295,7 +381,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 >   `Invoke-WebRequest` e quebra o download.
 > - Instalou o Node agora? Feche e reabra o PowerShell: o PATH só é lido por
 >   janelas novas e o `node` não aparece na janela aberta.
-> - Próximas execuções: `npx ponte-local` (vale em todos os sistemas). Na
+> - Próximas execuções: `npx ponte-local start` (vale em todos os sistemas). Na
 >   instalação manual: `~/ponte-agent/rodar.sh` (Linux) ou
 >   `cd $HOME\ponte-agent; node agent.js` (Windows). No Windows, o
 >   `rodar.bat` manda a saída para arquivo e desliga o QuickEdit (clique no
@@ -474,7 +560,7 @@ desde a última tag.
 **Credenciais:** `npm` usa o `~/.npmrc`; `gh` usa `gh auth login` (ou
 `GH_TOKEN` no ambiente).
 
-> ⚠️ O npm propaga em ~5-20 min. Logo depois de publicar, `npm view
+> ATENCAO: O npm propaga em ~5-20 min. Logo depois de publicar, `npm view
 > ponte-local versions` ainda pode mostrar só a versão antiga — é normal.
 
 ## Segurança

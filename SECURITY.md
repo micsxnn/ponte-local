@@ -9,8 +9,8 @@ baixando o `agent.js` novo. Correções de segurança saem sempre na `main`.
 
 | Versão | Suportada |
 | ------ | --------- |
-| `main` (última) | ✅ |
-| Tags/commits antigos | ❌ |
+| `main` (última) | sim |
+| Tags/commits antigos | não |
 
 ## Como reportar
 

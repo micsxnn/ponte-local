@@ -19,7 +19,7 @@ description: >-
 
 <!-- skill-version: 3.6.4 -->
 
-> ⚠️ **VARIANTE CONGELADA (3.6.4) — LEIA ISTO ANTES DE QUALQUER COISA.**
+> ATENCAO: **VARIANTE CONGELADA (3.6.4) — LEIA ISTO ANTES DE QUALQUER COISA.**
 > Este arquivo é o manual ANTIGO, para uma IA que já está DENTRO da pasta do
 > agente na máquina do usuário. A skill VIVA — a que o agente baixa do repo
 > (boot + a cada 60 s) e a que ensina a instalar/operar hoje — é a **SKILL.md
@@ -50,7 +50,7 @@ um por máquina, entregues no chat privado.
 └──────────────┘                  └─────────────────────┘            └──────────┘
 ```
 
-## ⚠️ AS 4 LEIS — valem mais que tudo que vem depois
+## ATENCAO: AS 4 LEIS — valem mais que tudo que vem depois
 
 1. **TODA tarefa termina com `task_done`. Sempre. Em qualquer tarefa, sem
    exceção, como ÚLTIMA ação:**
@@ -203,13 +203,13 @@ nativos. No **Linux** escolha conforme a sessão gráfica:
 
 | Sessão | Pacote | Comando | Janela por título? |
 |--------|--------|---------|--------------------|
-| X11 (qualquer distro) | `imagemagick` | `import` | ✅ sim (com `xdotool`) |
-| X11 | `scrot` | `scrot` | ❌ só tela inteira |
-| X11 | `maim` | `maim` | ❌ só tela inteira |
+| X11 (qualquer distro) | `imagemagick` | `import` | sim (com `xdotool`) |
+| X11 | `scrot` | `scrot` | não (só tela inteira) |
+| X11 | `maim` | `maim` | não (só tela inteira) |
 | Wayland/KDE | `spectacle` | `spectacle` | janela em foco |
 | Wayland/Hyprland | `hyprshot` | `hyprshot` | janela em foco |
 | Wayland/GNOME | `gnome-screenshot` | `gnome-screenshot` | janela em foco |
-| Termux/Android | `termux-api` | `termux-screenshot` | ❌ |
+| Termux/Android | `termux-api` | `termux-screenshot` | não |
 
 **Comandos para o usuário colar** (escolha UM conforme a distro):
 
@@ -242,13 +242,13 @@ de uma ferramenta de captura — no seu caso é `sudo pacman -S --needed
 imagemagick xdotool`. É do sistema, não muda nada no seu projeto. Quer que
 eu pule essa parte e siga sem print?"
 
-⚠️ **No Wayland** o compositor não expõe as janelas de forma genérica: a
+ATENCAO: **No Wayland** o compositor não expõe as janelas de forma genérica: a
 `screenshot_window` captura a janela **em foco** e avisa em `janela.aviso`.
 No X11 e no Windows a janela pedida (`window_title`/`window_class`/
 `window_id`) sai exata. Se o usuário pedir "print da janela do Firefox" e
 estiver no Wayland, diga isso ANTES de mandar a ação.
 
-⚠️ **Tela grande**: 4K em PNG passa de 9 MB e a ponte recusa. Use
+ATENCAO: **Tela grande**: 4K em PNG passa de 9 MB e a ponte recusa. Use
 `{"format":"jpg","quality":60}` — fica ~10× menor.
 
 ### Mexer no mouse — o agente PRECISA ENSINAR o usuário a instalar
@@ -277,7 +277,7 @@ rodar:
 echo $XDG_SESSION_TYPE
 ```
 
-⚠️ **No Wayland o `xdotool` NÃO serve**: ele mexe só no cursor do XWayland
+ATENCAO: **No Wayland o `xdotool` NÃO serve**: ele mexe só no cursor do XWayland
 (aplicativos X11), não no cursor real do compositor. O agente tenta o
 `ydotool` primeiro e, se cair no `xdotool`, a resposta vem com `aviso` —
 **a IA DEVE ler esse aviso** e, se ele estiver lá, avisar o usuário de que o
@@ -287,7 +287,7 @@ mouse não vai ser controlado de verdade.
 de uma ferramenta de controle — no seu caso é `sudo pacman -S --needed
 xdotool`. É do sistema, não mexe em nada seu. Quer que eu instale?"
 
-⚠️ **CLIQUE É AÇÃO DE CONSEQUÊNCIA.** Um clique pode apertar "Apagar",
+ATENCAO: **CLIQUE É AÇÃO DE CONSEQUÊNCIA.** Um clique pode apertar "Apagar",
 "Confirmar", "Finalizar compra", "Enviar". Antes de clicar, a IA **tem que
 ler a tela** (`screenshot`) para saber o que está sob o cursor, e quando o
 alvo for destrutivo ou irreversível, **confirmar com o usuário no chat**.
@@ -434,6 +434,27 @@ Não existe página de configuração — nenhuma etapa de instalação ou opera
 depende de interface — nunca mande ninguém "pegar o token numa página": quem
 preenche é você.
 
+## Qual comando é o seu (a variante dentro da máquina)
+
+O pacote `ponte-local` é híbrido e tem **dois comandos**. Dentro da pasta do
+agente, na máquina do usuário, você (a IA) só **lê**:
+
+| | **O SEU (leitura)** | **DO USUÁRIO (na máquina)** |
+|---|---|---|
+| **Comando** | `npx ponte-local skill`<br>`npx ponte-local acoes` | `npx ponte-local start` |
+| **Executa?** | não — só leitura | sim — sobe o agente |
+| **Grava config?** | nunca | sim |
+
+```bash
+npx ponte-local skill                 # a spec completa
+npx ponte-local acoes                 # as 31 ações
+npx ponte-local acoes mouse_click     # detalhe de uma ação
+```
+
+O `npx ponte-local start` é o que o **usuário** roda no terminal dele (com
+a trava anticatástrofe ativa). Você nunca roda `start` — você manda o
+usuário colar.
+
 ## Fase 2 — Instalar o agente no PC do usuário
 
 ### Forma A — `npx` (entregue ESTA; é o caminho oficial)
@@ -443,12 +464,12 @@ URL e token JÁ preenchidos por você** (a URL pública validada + o
 `PONTE_AGENT_TOKEN`) — ele só copia e cola:
 
 ```bash
-npx ponte-local --server https://SEU-RELAY --token PONTE_AGENT_TOKEN --save
+npx ponte-local start --server https://SEU-RELAY --token PONTE_AGENT_TOKEN --save
 ```
 
 - Funciona igual em Linux, macOS, Windows e Termux.
 - Na primeira vez, sem `--server`/`--token`, o `npx` pergunta no terminal.
-- Para religar depois: `npx ponte-local`.
+- Para religar depois: `npx ponte-local start`.
 - A config cai em `~/ponte-agent/ponte.config.json` (0600) — **fora** do
   pacote, porque o cache do `npx` é efêmero. `PONTE_HOME` muda o lugar.
 
@@ -477,7 +498,7 @@ Nas duas formas a config cai no mesmo lugar (`~/ponte-agent/ponte.config.json`)
 — dá para trocar de uma para a outra sem reconfigurar nada.
 
 No Windows, caminhos absolutos são `C:\Users\usuario\...`; para religar depois:
-`npx ponte-local` (ou, na forma manual, `cd $HOME\ponte-agent; node agent.js`).
+`npx ponte-local start` (ou, na forma manual, `cd $HOME\ponte-agent; node agent.js`).
 **Nunca** digite `curl` sem `.exe` no
 PowerShell antigo — é outro programa. Se o usuário não tem `winget`, o Node vem
 do instalador do nodejs.org (marcar "Add to PATH"). Instalou o Node agora? **Feche e reabra o PowerShell** — o PATH novo só entra em janelas abertas depois da instalação; na antiga, `node` devolve "o termo node não é reconhecido".
@@ -653,13 +674,13 @@ pedaço traz os bytes do cabeçalho em base64. O mesmo funciona para log de
 
 | Modo | O usuário religa com | Comportamento |
 |------|----------------------|---------------|
-| Desligado (padrão) | `npx ponte-local` | `run_command` negado; só operações de arquivo |
-| Supervisionado | `npx ponte-local --allow-run --save` | Caixa no terminal dele, `s`/`N` em 60 s; sem resposta = rejeita |
-| Autônomo | `npx ponte-local --auto --save` | Executa direto, loga `[AUTO] $ cmd`, trava anticatástrofe ativa |
+| Desligado (padrão) | `npx ponte-local start` | `run_command` negado; só operações de arquivo |
+| Supervisionado | `npx ponte-local start --allow-run --save` | Caixa no terminal dele, `s`/`N` em 60 s; sem resposta = rejeita |
+| Autônomo | `npx ponte-local start --auto --save` | Executa direto, loga `[AUTO] $ cmd`, trava anticatástrofe ativa |
 | **modo deus** | a IA pergunta NO CHAT após conectar e, com o aceite do usuário, envia `god_mode {"enabled":true}` | Igual ao autônomo: sem `s/N` (log `[deus] $ cmd`); trava anticatástrofe, lixeira e log continuam; desliga com `god_mode {"enabled":false}` — nada é digitado no terminal |
 
 Só o usuário pode trocar de modo (digitar o flag no terminal DELE). Peça com
-clareza, ex.: *"Ctrl+C no terminal do agente e rode `npx ponte-local --auto --save`
+clareza, ex.: *"Ctrl+C no terminal do agente e rode `npx ponte-local start --auto --save`
 — isso me dá execução direta com a trava anticatástrofe, ok?"* (no Windows,
 `Ctrl+C` e o mesmo comando no PowerShell).
 

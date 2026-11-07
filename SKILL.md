@@ -17,9 +17,55 @@ description: >-
   hospedar nada.
 ---
 
-<!-- skill-version: 4.1.1 -->
+<!-- skill-version: 4.2.0 -->
 
 # Ponte Local — operação remota do PC do usuário
+
+## QUAL COMANDO É O MEU? (leia antes de tudo)
+
+O pacote `ponte-local` é **híbrido**: o mesmo `npx` serve a dois lados
+opostos. **Você, IA, roda o comando do lado AGENTE — na sua VM, no seu
+servidor. NUNCA o do lado usuário.**
+
+| | **O SEU (agente, na VM)** | **DO USUÁRIO (no PC físico)** |
+|---|---|---|
+| **Comando** | `npx ponte-local skill`<br>`npx ponte-local acoes` | `npx ponte-local start` |
+| **O que faz** | imprime a spec e o manual das ações | sobe o agente local |
+| **Executa?** | **NUNCA** — é só leitura | **SIM** — é o único lado que executa |
+| **Grava config?** | nunca | sim (`~/ponte-agent/`) |
+| **Abre socket?** | nunca | sim (conversa com o relay) |
+
+**SEUS COMANDOS (use estes):**
+
+```bash
+npx ponte-local skill                  # a especificação completa desta skill
+npx ponte-local skill <secao>          # uma seção: skill operacao, skill acoes,
+                                       #   skill instalacao, skill relay, skill url,
+                                       #   skill 5-leis, skill referencia, skill
+                                       #   seguranca, skill apendice-a, skill terminal
+npx ponte-local skill --lista          # índice das seções
+npx ponte-local acoes                  # manual das 31 ações (mouse, tela, arquivos...)
+npx ponte-local acoes mouse_click      # detalhe de UMA ação
+npx ponte-local acoes --json           # todas as ações em JSON
+```
+
+**O COMANDO DO USUÁRIO (NÃO é seu — mande ele COLAR no terminal dele):**
+
+```bash
+npx ponte-local start --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --auto --save
+```
+
+**NUNCA rode `npx ponte-local start` na sua VM.** `start` sobe um agente
+local, liga a trava anticatástrofe e abre uma ponte de saída — é a
+**instrução para o terminal do usuário**, não para você. Se a ponte precisa
+ser instalada, você **entrega o comando** (o Bloco de Entrega do Passo 4) e
+o usuário cola. Se a ponte já está no ar (Apêndice A), você nem precisa dele:
+opera só por `curl` na API.
+
+Você **nunca** executa nada no PC do usuário diretamente: você **enfileira
+comandos** (`POST /api/ponte/cmd`) e o agente que está lá executa — com a
+trava, o escopo e a lixeira dele. Sua spec e o manual de ações saem pelo
+comando de leitura, no seu lado.
 
 ## 0. A ponte em 60 segundos
 
@@ -324,7 +370,7 @@ grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunel.log | head -1
 # ngrok também serve; exige conta
 ```
 
-⚠️ A URL do trycloudflare **MUDA a cada execução do túnel**: caiu, a ponte
+ATENCAO: A URL do trycloudflare **MUDA a cada execução do túnel**: caiu, a ponte
 cai — reerga e religue o agente com `--server NOVA_URL --save` (§ 6). Por
 isso, URL de plataforma ou domínio fixo vencem o túnel sempre.
 
@@ -359,19 +405,19 @@ nada e não depende de a IA montar bloco nenhum.**
 O agente é o pacote npm `ponte-local`. O `npx` baixa e roda na hora:
 
 ```bash
-npx ponte-local --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --auto --save
+npx ponte-local start --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --auto --save
 ```
 
 - Na primeira vez, se rodar **sem** `--server`/`--token`, o `npx` pergunta a
   URL e o token no terminal e salva a config.
-- Das próximas vezes é só `npx ponte-local`.
-- `npx ponte-local --help` mostra todas as opções.
+- Das próximas vezes é só `npx ponte-local start`.
+- `npx ponte-local help` mostra todas as opções (e os dois lados).
 - Os dados (config, log, relatório, SKILL.md baixada) ficam em
   `~/ponte-agent/` — **fora** do pacote, porque o cache do `npx` é efêmero.
   `PONTE_HOME` muda esse lugar.
 
 **Diga assim:** "copia e cola esse comando no terminal. Ele baixa o
-programinha e já conecta. Na próxima vez é só `npx ponte-local`."
+programinha e já conecta. Na próxima vez é só `npx ponte-local start`."
 
 #### Forma B — manual (sem `npx`)
 
@@ -412,7 +458,7 @@ sudo apt install -y imagemagick xdotool        # Debian/Ubuntu
 sudo dnf install -y ImageMagick xdotool        # Fedora
 ```
 
-⚠️ **No Wayland** o compositor não expõe as janelas de forma genérica: a
+ATENCAO: **No Wayland** o compositor não expõe as janelas de forma genérica: a
 `screenshot_window` captura a janela **em foco** e avisa em `janela.aviso`.
 No X11 e no Windows a janela pedida é capturada exata.
 
@@ -457,7 +503,7 @@ rodar:
 echo $XDG_SESSION_TYPE
 ```
 
-⚠️ **No Wayland o `xdotool` NÃO serve**: ele mexe só no cursor do XWayland
+ATENCAO: **No Wayland o `xdotool` NÃO serve**: ele mexe só no cursor do XWayland
 (aplicativos X11), não no cursor real do compositor. O agente tenta o
 `ydotool` primeiro e, se cair no `xdotool`, a resposta vem com `aviso` —
 **a IA DEVE ler esse aviso** e, se ele estiver lá, avisar o usuário de que o
@@ -467,12 +513,12 @@ mouse não vai ser controlado de verdade.
 de uma ferramenta de controle — no seu caso é `sudo pacman -S --needed
 xdotool`. É do sistema, não mexe em nada seu. Quer que eu instale?"
 
-⚠️ **CLIQUE É AÇÃO DE CONSEQUÊNCIA.** Um clique pode apertar "Apagar",
+ATENCAO: **CLIQUE É AÇÃO DE CONSEQUÊNCIA.** Um clique pode apertar "Apagar",
 "Confirmar", "Finalizar compra", "Enviar". Antes de clicar, a IA **tem que
 ler a tela** (`screenshot`) para saber o que está sob o cursor, e quando o
 alvo for destrutivo ou irreversível, **confirmar com o usuário no chat**.
 
-⚠️ **Windows: Node instalado AGORA? Feche TODAS as janelas do PowerShell e
+ATENCAO: **Windows: Node instalado AGORA? Feche TODAS as janelas do PowerShell e
 abra uma NOVA antes de seguir.** O PATH novo não entra em janelas que já
 estavam abertas — na janela velha, `node agent.js` devolve "o termo node não
 é reconhecido". **Diga assim:** "fechou todas as janelas do PowerShell? abre
@@ -492,14 +538,14 @@ Termux — é o mesmo comando nos quatro:
 
 ```bash
 # ONDE: no PC DO USUÁRIO (Linux/macOS/Windows/Termux) — copie TUDO, cole, Enter
-npx ponte-local --server "URL_DA_PONTE" --token "TOKEN_DA_MAQUINA_X" --auto --save
+npx ponte-local start --server "URL_DA_PONTE" --token "TOKEN_DA_MAQUINA_X" --auto --save
 ```
 
 Checklist ANTES de entregar: a URL é a PÚBLICA (não localhost), o token é o
 da lane certa, quem roda é a máquina certa.
 **Diga assim:** "copia tudo, cola e Enter. O token aí é só da tua máquina —
 não compartilha. Deixa essa janela aberta: é por ela que eu trabalho; fechou,
-meu acesso cai (depois é só rodar `npx ponte-local` de novo)."
+meu acesso cai (depois é só rodar `npx ponte-local start` de novo)."
 
 **FORMA B — manual (só se o usuário não puder usar `npx`).** Baixa o
 `agent.js` e roda com `node`:
@@ -540,9 +586,9 @@ Notas por plataforma (o resto é igual):
 ```bash
 # ONDE: no TERMIUX do usuário — copie TUDO, cole, Enter
 pkg update -y && pkg install -y nodejs-lts
-termux-setup-storage   # ⚠️ VAI APARECER UM PEDIDO DE PERMISSÃO DO ANDROID: aceite
+termux-setup-storage   # ATENCAO: VAI APARECER UM PEDIDO DE PERMISSÃO DO ANDROID: aceite
 termux-wake-lock
-npx ponte-local --server "URL_DA_PONTE" --token TOKEN_DO_APARELHO --auto --save
+npx ponte-local start --server "URL_DA_PONTE" --token TOKEN_DO_APARELHO --auto --save
 ```
 
 (O Termux não tem `npx` por padrão: se der "comando não encontrado", use a
@@ -727,19 +773,19 @@ Exemplo — confirmar o formato de um vídeo de 2 GB e espiar o header:
 
 | Estado | Como chega lá | Comportamento |
 |--------|---------------|---------------|
-| Desligado (padrão) | `npx ponte-local` | `run_command` negado (o erro ensina as receitas); só operações de arquivo |
-| Supervisionado | usuário religa com `npx ponte-local --allow-run --save` | caixa s/N no terminal DELE, 60 s; **sem resposta = auto-rejeita** (erro "Você rejeitou o comando no terminal") |
-| Autônomo | usuário religa com `npx ponte-local --auto --save` | executa direto, log `[AUTO] $ cmd`; trava anticatástrofe ativa |
+| Desligado (padrão) | `npx ponte-local start` | `run_command` negado (o erro ensina as receitas); só operações de arquivo |
+| Supervisionado | usuário religa com `npx ponte-local start --allow-run --save` | caixa s/N no terminal DELE, 60 s; **sem resposta = auto-rejeita** (erro "Você rejeitou o comando no terminal") |
+| Autônomo | usuário religa com `npx ponte-local start --auto --save` | executa direto, log `[AUTO] $ cmd`; trava anticatástrofe ativa |
 | **modo deus** | a IA pergunta NO CHAT após conectar; aceite → `god_mode {"enabled":true}` | igual ao autônomo (log `[deus] $ cmd`); trava, lixeira e log continuam; o aceite vale mesmo sem flag no terminal |
 
 Trocar de modo (exceto modo deus, que é conversacional) exige o usuário
 religar o agente no terminal DELE. **Diga assim:** "Ctrl+C no terminal do
-agente e roda `npx ponte-local --auto --save` — isso me dá execução direta com a
-trava anticatástrofe, ok?" (no Windows, mesmo comando no PowerShell). ⚠️ Fechar
+agente e roda `npx ponte-local start --auto --save` — isso me dá execução direta com a
+trava anticatástrofe, ok?" (no Windows, mesmo comando no PowerShell). ATENCAO: Fechar
 a janela do agente me corta o acesso — avise que é normal e rápido.
 
-⚠️ **O modo fica GRAVADO em `ponte.config.json` pelo `--save`.** Depois de
-`--auto --save`, religar com `npx ponte-local` puro NÃO volta ao desligado — e
+ATENCAO: **O modo fica GRAVADO em `ponte.config.json` pelo `--save`.** Depois de
+`--auto --save`, religar com `npx ponte-local start` puro NÃO volta ao desligado — e
 `--allow-run --save` também não rebaixa (o `auto:true` persiste). Para
 rebaixar de verdade: edite o `ponte.config.json` na pasta do agente
 (`"auto": false` → supervisionado; `"run": false, "auto": false` → desligado)
@@ -846,7 +892,7 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
   `--save` regrava a config sozinho.
 - **Atualizar o agente (instalação `npx`):** é automático — o `npx` resolve
   a versão mais nova do pacote a cada execução. Se o usuário quiser fixar:
-  `npx ponte-local@1.14.0 ...`.
+  `npx ponte-local start@1.14.0 ...`.
 - **Atualizar o agente (instalação manual):** baixe o `agente/agent.js` novo
   do repo, envie ao PC com `write_binary` para `~/Downloads/` (ou
   `C:\Users\u\Downloads`), e lá:
@@ -884,7 +930,7 @@ com os commits desde a última tag.
 **IMPORTANTE — o npm é um registry separado do GitHub:** commit e release
 NÃO atualizam o npm. Só o `npm publish` publica. Mas o `npx` revalida o
 registry a cada uso, então assim que publica, todo mundo que roda
-`npx ponte-local` pega a versão nova sem reinstalar nada. A propagação
+`npx ponte-local start` pega a versão nova sem reinstalar nada. A propagação
 demora ~5-20 min.
 
 **Regra de versão:** a versão do **agente** (e do npm) é `1.x.y`; a tag do
@@ -909,7 +955,7 @@ demora ~5-20 min.
 | `TEMPO ESGOTADO` com agente conectado | baseline do operador maior que os ids da instância nova | apague `.ponte_since_<nome-da-lane>` na pasta do `ponte.py` (ou em `PONTE_STATE_DIR`, se definido) |
 | `TEMPO ESGOTADO` em modo supervisionado | prompt s/N + execução passaram da espera do operador | reenvie com `PONTE_WAIT_S=150+` (sem resposta na caixa, o agente auto-rejeita com erro próprio) |
 | `Você rejeitou o comando no terminal (resposta: n)` | ninguém confirmou a caixa s/N em 60 s | reenvie; **Diga assim:** "vai aparecer a caixa de novo — aperta `s` quando ela vier" |
-| Religuei com `npx ponte-local` e ele segue executando sozinho | modo gravado no `ponte.config.json` pelo `--save` | edite o config (`"auto": false`) ou apague-o e religue com as flags desejadas; NUNCA `--auto=false` (ativa!) |
+| Religuei com `npx ponte-local start` e ele segue executando sozinho | modo gravado no `ponte.config.json` pelo `--save` | edite o config (`"auto": false`) ou apague-o e religue com as flags desejadas; NUNCA `--auto=false` (ativa!) |
 | `Fila de comandos cheia` (429) | agente offline/travado acumulando além de 100 | religue o agente — pendentes <24h drenam sozinhos no reconnect |
 | Agente Windows "congela" com a janela normal | QuickEdit do console: clique dentro da janela congela o stdout | rode pelo `rodar.bat` (log em arquivo + QuickEdit off); `watchdog.bat` religa sozinho |
 | Relay reiniciou e perdeu fila/histórico | relay < 1.2.0 (estado só em RAM) | atualize o `relay/` do repo: snapshot em `.ponte-estado.json` sobrevive a restart |
