@@ -114,9 +114,9 @@ SSH, nada para configurar no roteador.
 
 | Modo | Como ativa | Comportamento |
 |------|------------|---------------|
-| **Desligado** (padrão) | `node agent.js` | Só operações de arquivo; a IA não executa comandos. |
-| **Supervisionado** | `node agent.js --allow-run --save` | Cada comando aparece no seu terminal; `s`/`N` em 60 s; sem resposta, o agente rejeita. |
-| **Autônomo** | `node agent.js --auto --save` | Executa direto (loga `[AUTO] $ cmd`), com a trava anticatástrofe ativa. |
+| **Desligado** (padrão) | `npx ponte-local` | Só operações de arquivo; a IA não executa comandos. |
+| **Supervisionado** | `npx ponte-local --allow-run --save` | Cada comando aparece no seu terminal; `s`/`N` em 60 s; sem resposta, o agente rejeita. |
+| **Autônomo** | `npx ponte-local --auto --save` | Executa direto (loga `[AUTO] $ cmd`), com a trava anticatástrofe ativa. |
 | **modo deus** | A IA pergunta no chat depois de conectar e, com o seu aceite, envia `god_mode {"enabled":true}` | Igual ao autônomo (loga `[deus] $ cmd`); trava, lixeira e log continuam; desliga com `god_mode {"enabled":false}`. |
 
 Os modos supervisionado e autônomo mudam só com um flag digitado por você no
@@ -165,25 +165,31 @@ sudo dnf install ImageMagick xdotool  # Fedora
 
 ### Caminho 0 — `npx` (o mais rápido)
 
-O agente é um pacote npm. Instale e rode com um comando:
+O agente é um pacote npm. **Não precisa instalar nada** — o `npx` baixa e
+roda:
 
 ```bash
 npx ponte-local --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
 
-Na **primeira vez** o `npx` pergunta a URL do relay e o token e salva a
-config. Depois é só:
+Na **primeira vez**, se você rodar sem `--server`/`--token`, o `npx` pergunta
+a URL do relay e o token no terminal e salva a config. Depois é só:
 
 ```bash
 npx ponte-local
 ```
 
+Outras opções:
+
 ```bash
 npx ponte-local --help      # todas as opções
 npx ponte-local --version   # só a versão
+npx ponte-local --auto --save            # modo autônomo (executa direto)
+npx ponte-local --allow-run --save       # supervisionado (pede s/N)
 ```
 
-**Onde os dados ficam** (fora do pacote — o cache do `npx` é efêmero):
+**Onde os dados ficam** (fora do pacote — o cache do `npx` é efêmero e o
+token se perderia a cada re-resolve):
 
 | Arquivo | Caminho |
 |---------|---------|
@@ -192,8 +198,11 @@ npx ponte-local --version   # só a versão
 | Relatório da tarefa | `~/ponte-agent/relatorio-ponte.txt` |
 | SKILL.md baixada | `~/ponte-agent/SKILL.md` |
 
-Defina `PONTE_HOME` para mudar essa pasta. A pasta inteira é **bloqueada
-para leitura remota** (o token mora ali).
+Defina `PONTE_HOME` para mudar essa pasta. Ela é criada com permissão 0700 e
+é **inteiramente bloqueada para leitura remota** (o token mora ali).
+
+> O token da ponte é o que a sua IA te deu no chat — **não** é a senha da
+> sua conta GitHub nem de outro serviço.
 
 ### Caminho 1 — peça para a IA instalar (recomendado)
 
@@ -223,7 +232,7 @@ export PONTE_ADMIN_TOKEN=$(openssl rand -hex 16)     # só para quem injeta coma
 npm run dev    # Next.js 16+? deixe cacheComponents: false no next.config.ts (ver SKILL.md)
 ```
 
-**No seu PC, Linux:**
+**No seu PC, Linux** (só se você **não** quiser usar `npx`):
 
 ```bash
 mkdir -p ~/ponte-agent && cd ~/ponte-agent
@@ -231,7 +240,7 @@ curl -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/ag
 node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
 
-**No seu PC, Windows (PowerShell):**
+**No seu PC, Windows (PowerShell)** (idem):
 
 ```powershell
 mkdir "$HOME\ponte-agent" -Force; cd "$HOME\ponte-agent"
@@ -239,13 +248,17 @@ curl.exe -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/mai
 node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 ```
 
+> Manual ou `npx`, a config cai em `~/ponte-agent/ponte.config.json` — o
+> mesmo lugar. Dá para trocar de um pro outro sem reconfigurar nada.
+
 > **Dicas que evitam 90% dos problemas**
 >
 > - No PowerShell, use sempre `curl.exe`: o `curl` sem `.exe` é um alias do
 >   `Invoke-WebRequest` e quebra o download.
 > - Instalou o Node agora? Feche e reabra o PowerShell: o PATH só é lido por
 >   janelas novas e o `node` não aparece na janela aberta.
-> - Próximas execuções: `~/ponte-agent/rodar.sh` (Linux) ou
+> - Próximas execuções: `npx ponte-local` (vale em todos os sistemas). Na
+>   instalação manual: `~/ponte-agent/rodar.sh` (Linux) ou
 >   `cd $HOME\ponte-agent; node agent.js` (Windows). No Windows, o
 >   `rodar.bat` manda a saída para arquivo e desliga o QuickEdit (clique no
 >   console não congela mais o agente) e o `watchdog.bat` religa o agente

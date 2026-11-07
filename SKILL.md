@@ -351,21 +351,33 @@ Sem as três, o agente do usuário vai pollar para o nada — ou instalar um
 
 ### Passo 4 — Instalar o agente NA MÁQUINA do usuário
 
-**Duas formas.** Prefira o `npx` (não instala nada, roda direto):
+**Duas formas. Entregue o `npx` (forma A) — é o caminho oficial, não instala
+nada e não depende de a IA montar bloco nenhum.**
+
+#### Forma A — `npx` (oficial, recomendada)
+
+O agente é o pacote npm `ponte-local`. O `npx` baixa e roda na hora:
 
 ```bash
-# FORMA npx (recomendada) — o pacote é baixado e executado na hora
 npx ponte-local --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --auto --save
 ```
 
-Na primeira vez o `npx` pergunta a URL e o token (se não vierem nas flags) e
-grava a config em `~/ponte-agent/ponte.config.json` (0600). Depois é só
-`npx ponte-local`. Os dados (config, log, relatório, skill) ficam NESSA pasta
-— fora do pacote, porque o cache do `npx` é efêmero. `PONTE_HOME` muda o
-lugar.
+- Na primeira vez, se rodar **sem** `--server`/`--token`, o `npx` pergunta a
+  URL e o token no terminal e salva a config.
+- Das próximas vezes é só `npx ponte-local`.
+- `npx ponte-local --help` mostra todas as opções.
+- Os dados (config, log, relatório, SKILL.md baixada) ficam em
+  `~/ponte-agent/` — **fora** do pacote, porque o cache do `npx` é efêmero.
+  `PONTE_HOME` muda esse lugar.
 
-A **forma manual** (baixar o `agent.js` e rodar com `node`) continua valendo
-e está logo abaixo.
+**Diga assim:** "copia e cola esse comando no terminal. Ele baixa o
+programinha e já conecta. Na próxima vez é só `npx ponte-local`."
+
+#### Forma B — manual (sem `npx`)
+
+Só se o usuário disser que **não** pode usar `npx` (ou não tem internet para
+baixar o pacote): baixe o `agent.js` e rode com `node` — bloco de entrega
+logo abaixo.
 
 **Pré-requisitos no PC do usuário:** Node.js 18+ e um terminal. Confira/instale:
 
@@ -434,7 +446,22 @@ agente morto. O bloco instala em modo **autônomo** (`--auto`): você executa
 comandos direto, com a trava anticatástrofe ativa — o usuário pode trocar o
 modo depois (§ 4.4), e a Lei 3 continua valendo.
 
-**Máquina X — rode este comando NELA** (o token abaixo é SÓ dela):
+**FORMA A — `npx` (entregue ESTE).** Funciona em Linux, macOS, Windows e
+Termux — é o mesmo comando nos quatro:
+
+```bash
+# ONDE: no PC DO USUÁRIO (Linux/macOS/Windows/Termux) — copie TUDO, cole, Enter
+npx ponte-local --server "URL_DA_PONTE" --token "TOKEN_DA_MAQUINA_X" --auto --save
+```
+
+Checklist ANTES de entregar: a URL é a PÚBLICA (não localhost), o token é o
+da lane certa, quem roda é a máquina certa.
+**Diga assim:** "copia tudo, cola e Enter. O token aí é só da tua máquina —
+não compartilha. Deixa essa janela aberta: é por ela que eu trabalho; fechou,
+meu acesso cai (depois é só rodar `npx ponte-local` de novo)."
+
+**FORMA B — manual (só se o usuário não puder usar `npx`).** Baixa o
+`agent.js` e roda com `node`:
 
 ```bash
 # ONDE: no PC DO USUÁRIO (Linux/macOS/Termux) — copie TUDO, cole, Enter
@@ -452,14 +479,10 @@ node agent.js --server "URL_DA_PONTE" --token TOKEN_DA_MAQUINA_X --auto --save
 node agent.js
 ```
 
-Checklist ANTES de entregar: a URL é a PÚBLICA (não localhost), o token é o da
-lane certa, quem roda é a máquina certa. Onde o repo é público, a alternativa
-de download é
+Nas duas formas a config cai em `~/ponte-agent/ponte.config.json` — dá para
+trocar de uma para a outra sem reconfigurar nada. Onde o repo é público, a
+alternativa de download é
 `curl -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js`.
-**Diga assim:** "copia tudo, cola e Enter. O token aí é só da tua máquina —
-não compartilha. Deixa essa janela aberta: é por ela que eu trabalho; fechou,
-meu acesso cai (depois é só rodar `~/ponte-agent/rodar.sh`, Linux, ou dar
-duplo clique no `rodar.bat`, Windows)."
 
 Notas por plataforma (o resto é igual):
 
@@ -477,12 +500,13 @@ Notas por plataforma (o resto é igual):
 # ONDE: no TERMIUX do usuário — copie TUDO, cole, Enter
 pkg update -y && pkg install -y nodejs-lts
 termux-setup-storage   # ⚠️ VAI APARECER UM PEDIDO DE PERMISSÃO DO ANDROID: aceite
-mkdir -p ~/ponte-agent
-curl -fso ~/ponte-agent/agent.js "URL_DA_PONTE/api/ponte/download"
 termux-wake-lock
-node ~/ponte-agent/agent.js --server "URL_DA_PONTE" --token TOKEN_DO_APARELHO --auto --save
-node ~/ponte-agent/agent.js
+npx ponte-local --server "URL_DA_PONTE" --token TOKEN_DO_APARELHO --auto --save
 ```
+
+(O Termux não tem `npx` por padrão: se der "comando não encontrado", use a
+forma manual — `mkdir -p ~/ponte-agent`, baixe o `agent.js` e rode
+`node ~/ponte-agent/agent.js --server ... --token ... --auto --save`.)
 
   **Diga assim (Termux):** "no meio vai aparecer um pedido de permissão de
   acesso aos arquivos do Android — toca em PERMITIR". Mantenha vivo:
@@ -657,19 +681,19 @@ Exemplo — confirmar o formato de um vídeo de 2 GB e espiar o header:
 
 | Estado | Como chega lá | Comportamento |
 |--------|---------------|---------------|
-| Desligado (padrão) | `node agent.js` | `run_command` negado (o erro ensina as receitas); só operações de arquivo |
-| Supervisionado | usuário religa com `--allow-run --save` | caixa s/N no terminal DELE, 60 s; **sem resposta = auto-rejeita** (erro "Você rejeitou o comando no terminal") |
-| Autônomo | usuário religa com `--auto --save` | executa direto, log `[AUTO] $ cmd`; trava anticatástrofe ativa |
+| Desligado (padrão) | `npx ponte-local` | `run_command` negado (o erro ensina as receitas); só operações de arquivo |
+| Supervisionado | usuário religa com `npx ponte-local --allow-run --save` | caixa s/N no terminal DELE, 60 s; **sem resposta = auto-rejeita** (erro "Você rejeitou o comando no terminal") |
+| Autônomo | usuário religa com `npx ponte-local --auto --save` | executa direto, log `[AUTO] $ cmd`; trava anticatástrofe ativa |
 | **modo deus** | a IA pergunta NO CHAT após conectar; aceite → `god_mode {"enabled":true}` | igual ao autônomo (log `[deus] $ cmd`); trava, lixeira e log continuam; o aceite vale mesmo sem flag no terminal |
 
 Trocar de modo (exceto modo deus, que é conversacional) exige o usuário
 religar o agente no terminal DELE. **Diga assim:** "Ctrl+C no terminal do
-agente e roda `node agent.js --auto --save` — isso me dá execução direta com a
+agente e roda `npx ponte-local --auto --save` — isso me dá execução direta com a
 trava anticatástrofe, ok?" (no Windows, mesmo comando no PowerShell). ⚠️ Fechar
 a janela do agente me corta o acesso — avise que é normal e rápido.
 
 ⚠️ **O modo fica GRAVADO em `ponte.config.json` pelo `--save`.** Depois de
-`--auto --save`, religar com `node agent.js` puro NÃO volta ao desligado — e
+`--auto --save`, religar com `npx ponte-local` puro NÃO volta ao desligado — e
 `--allow-run --save` também não rebaixa (o `auto:true` persiste). Para
 rebaixar de verdade: edite o `ponte.config.json` na pasta do agente
 (`"auto": false` → supervisionado; `"run": false, "auto": false` → desligado)
@@ -773,8 +797,12 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
   `semToken:true`).
 - **URL de preview mudou:** reenvie o bloco de instalação com a URL nova — o
   `--save` regrava a config sozinho.
-- **Atualizar o agente:** baixe o `agente/agent.js` novo do repo, envie ao PC
-  com `write_binary` para `~/Downloads/` (ou `C:\Users\u\Downloads`), e lá:
+- **Atualizar o agente (instalação `npx`):** é automático — o `npx` resolve
+  a versão mais nova do pacote a cada execução. Se o usuário quiser fixar:
+  `npx ponte-local@1.13.0 ...`.
+- **Atualizar o agente (instalação manual):** baixe o `agente/agent.js` novo
+  do repo, envie ao PC com `write_binary` para `~/Downloads/` (ou
+  `C:\Users\u\Downloads`), e lá:
   `cp ~/Downloads/agent-vNOVO.js ~/ponte-agent/agent.js` (Windows: `copy`),
   Ctrl+C no agente e religue no modo escolhido.
 - **Atualizar ESTA skill (na sua pasta de skills): desinstalação TOTAL
@@ -799,13 +827,13 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 | PowerShell: "o termo curl não é reconhecido" ou resposta HTML | `curl` sem `.exe` virou `Invoke-WebRequest` | use **`curl.exe`** (com a extensão) |
 | PowerShell: "o termo node não é reconhecido" logo após instalar o Node | PATH novo não entra em janelas já abertas | feche TODAS as janelas do PowerShell, abra uma nova e repita |
 | Agente não conecta (`conectado:false`) | URL/token errados, relay sem o token no `.env`, ou agente fechado | confira `--server`, confira `.env` + restart do relay, religue o agente |
-| `node agent.js` no PC falha com SyntaxError | o `curl -o agent.js` gravou um JSON de erro (rota `/download` 404) | copie `agente/agent.js` para `download/ponte-agent/` no relay; valide com `curl -fsS URL/api/ponte/download \| head -c 40` |
+| `node agent.js` no PC falha com SyntaxError (instalação manual) | o `curl -o agent.js` gravou um JSON de erro (rota `/download` 404) | copie `agente/agent.js` para `download/ponte-agent/` no relay; valide com `curl -fsS URL/api/ponte/download \| head -c 40` |
 | Local responde, público dá connection refused | relay subiu em outra porta (ex.: `PORT=3001`) e os curls/túnel apontam 3000 | alinhe a porta em TODOS os comandos (e no túnel) |
 | Ponte morreu sozinha horas depois | túnel efêmero (trycloudflare) mudou de URL ou morreu | reerga o túnel e religue o agente com `--server NOVA_URL --save` |
 | `TEMPO ESGOTADO` com agente conectado | baseline do operador maior que os ids da instância nova | apague `.ponte_since_<nome-da-lane>` na pasta do `ponte.py` (ou em `PONTE_STATE_DIR`, se definido) |
 | `TEMPO ESGOTADO` em modo supervisionado | prompt s/N + execução passaram da espera do operador | reenvie com `PONTE_WAIT_S=150+` (sem resposta na caixa, o agente auto-rejeita com erro próprio) |
 | `Você rejeitou o comando no terminal (resposta: n)` | ninguém confirmou a caixa s/N em 60 s | reenvie; **Diga assim:** "vai aparecer a caixa de novo — aperta `s` quando ela vier" |
-| Religuei com `node agent.js` e ele segue executando sozinho | modo gravado no `ponte.config.json` pelo `--save` | edite o config (`"auto": false`) ou apague-o e religue com as flags desejadas; NUNCA `--auto=false` (ativa!) |
+| Religuei com `npx ponte-local` e ele segue executando sozinho | modo gravado no `ponte.config.json` pelo `--save` | edite o config (`"auto": false`) ou apague-o e religue com as flags desejadas; NUNCA `--auto=false` (ativa!) |
 | `Fila de comandos cheia` (429) | agente offline/travado acumulando além de 100 | religue o agente — pendentes <24h drenam sozinhos no reconnect |
 | Agente Windows "congela" com a janela normal | QuickEdit do console: clique dentro da janela congela o stdout | rode pelo `rodar.bat` (log em arquivo + QuickEdit off); `watchdog.bat` religa sozinho |
 | Relay reiniciou e perdeu fila/histórico | relay < 1.2.0 (estado só em RAM) | atualize o `relay/` do repo: snapshot em `.ponte-estado.json` sobrevive a restart |

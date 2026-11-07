@@ -83,7 +83,7 @@ lê). Defina `PONTE_HOME` se quiser mudar essa pasta.
    e luz de conexão; nada da instalação depende dele.)
 
 Para encerrar: `Ctrl+C` (se houver tarefa em andamento, o relatório é gerado
-antes de sair — nada se perde). Para religar: `node agent.js`.
+antes de sair — nada se perde). Para religar: `npx ponte-local`.
 
 **No Windows**, depois da primeira configuração, prefira o `rodar.bat` (duplo
 clique) — veja a seção abaixo. Ele resolve um problema clássico do console
@@ -100,7 +100,7 @@ outras, e um comando destinado a uma máquina **nunca executa na outra**.
 Precisou trocar o token de uma máquina (migração, rotação)? Duas formas,
 as duas com o agente religando sozinho na sequência:
 
-- religar com o token novo: `node agent.js --token NOVO_TOKEN --save`
+- religar com o token novo: `npx ponte-local --token NOVO_TOKEN --save`
 - ou editar `ponte.config.json` (campo `"token"`) e religar o agente.
 
 No Windows o dia a dia continua sendo pelo `rodar.bat` — a troca de token é
@@ -166,8 +166,8 @@ No Windows Terminal o problema não existe (não há QuickEdit).
 | Modo | Como ativar | O que acontece |
 | ---- | ----------- | -------------- |
 | **Desligado** (padrão) | — | Nenhum comando de shell roda. Só operações de arquivo. |
-| **Supervisionado** | `node agent.js --allow-run --save` | Cada comando aparece numa caixa no terminal e roda só com `s` + Enter (60s para responder). |
-| **Autônomo** | `node agent.js --auto --save` | A IA executa os comandos SOZINHA, sem perguntar. O terminal só registra `[AUTO] $ comando`. Uma trava anticatástrofe recusa sempre: `rm -rf` na raiz/home/sistema, `mkfs`, `dd` em disco, fork bomb, `wipefs`, `shred` em dispositivo. |
+| **Supervisionado** | `npx ponte-local --allow-run --save` | Cada comando aparece numa caixa no terminal e roda só com `s` + Enter (60s para responder). |
+| **Autônomo** | `npx ponte-local --auto --save` | A IA executa os comandos SOZINHA, sem perguntar. O terminal só registra `[AUTO] $ comando`. Uma trava anticatástrofe recusa sempre: `rm -rf` na raiz/home/sistema, `mkfs`, `dd` em disco, fork bomb, `wipefs`, `shred` em dispositivo. |
 
 A escalada de permissão é sempre FÍSICA: é você quem digita `--allow-run`
 ou `--auto` no SEU terminal — a IA não consegue ligar modos sozinha.
@@ -241,7 +241,7 @@ A skill se atualiza sozinha; o `agent.js` não. Para trocar a versão dele:
 - **Windows (PowerShell):**
   `curl.exe -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js`
 
-Depois é só encerrar (`Ctrl+C`) e religar (`node agent.js`).
+Depois é só encerrar (`Ctrl+C`) e religar (`npx ponte-local`).
 
 ## O que o agente NUNCA faz
 

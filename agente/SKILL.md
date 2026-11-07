@@ -395,10 +395,28 @@ preenche é você.
 
 ## Fase 2 — Instalar o agente no PC do usuário
 
-### Linux
+### Forma A — `npx` (entregue ESTA; é o caminho oficial)
 
-Entregue ao usuário **este bloco com URL e token JÁ preenchidos por você** (a
-URL pública validada + o `PONTE_AGENT_TOKEN`) — ele só copia e cola:
+O agente é o pacote npm `ponte-local`. Entregue ao usuário **este bloco com
+URL e token JÁ preenchidos por você** (a URL pública validada + o
+`PONTE_AGENT_TOKEN`) — ele só copia e cola:
+
+```bash
+npx ponte-local --server https://SEU-RELAY --token PONTE_AGENT_TOKEN --save
+```
+
+- Funciona igual em Linux, macOS, Windows e Termux.
+- Na primeira vez, sem `--server`/`--token`, o `npx` pergunta no terminal.
+- Para religar depois: `npx ponte-local`.
+- A config cai em `~/ponte-agent/ponte.config.json` (0600) — **fora** do
+  pacote, porque o cache do `npx` é efêmero. `PONTE_HOME` muda o lugar.
+
+**Diga assim:** "copia e cola esse comando no terminal. Ele baixa o
+programinha e já conecta."
+
+### Forma B — manual (só se o usuário não puder usar `npx`)
+
+### Linux
 
 ```bash
 mkdir -p ~/ponte-agent && cd ~/ponte-agent
@@ -414,10 +432,14 @@ curl.exe -fso agent.js https://SEU-RELAY/api/ponte/download
 node agent.js --server https://SEU-RELAY --token PONTE_AGENT_TOKEN --save
 ```
 
+Nas duas formas a config cai no mesmo lugar (`~/ponte-agent/ponte.config.json`)
+— dá para trocar de uma para a outra sem reconfigurar nada.
+
 No Windows, caminhos absolutos são `C:\Users\usuario\...`; para religar depois:
-`cd $HOME\ponte-agent; node agent.js`. **Nunca** digite `curl` sem `.exe` no
+`npx ponte-local` (ou, na forma manual, `cd $HOME\ponte-agent; node agent.js`).
+**Nunca** digite `curl` sem `.exe` no
 PowerShell antigo — é outro programa. Se o usuário não tem `winget`, o Node vem
-do instalador do nodejs.org (marcar "Add to PATH"). Instalou o Node agora? **Feche e reabra o PowerShell** — o PATH novo só entra em janelas abertas depois da instalação; na antiga, `node agent.js` devolve "o termo node não é reconhecido".
+do instalador do nodejs.org (marcar "Add to PATH"). Instalou o Node agora? **Feche e reabra o PowerShell** — o PATH novo só entra em janelas abertas depois da instalação; na antiga, `node` devolve "o termo node não é reconhecido".
 
 No Windows, o dia a dia é pelo **`rodar.bat`** (duplo clique): ele desliga o
 QuickEdit do console e manda a saída para `ponte-agent.log` — clique acidental
@@ -585,13 +607,13 @@ pedaço traz os bytes do cabeçalho em base64. O mesmo funciona para log de
 
 | Modo | O usuário religa com | Comportamento |
 |------|----------------------|---------------|
-| Desligado (padrão) | `node agent.js` | `run_command` negado; só operações de arquivo |
-| Supervisionado | `node agent.js --allow-run --save` | Caixa no terminal dele, `s`/`N` em 60 s; sem resposta = rejeita |
-| Autônomo | `node agent.js --auto --save` | Executa direto, loga `[AUTO] $ cmd`, trava anticatástrofe ativa |
+| Desligado (padrão) | `npx ponte-local` | `run_command` negado; só operações de arquivo |
+| Supervisionado | `npx ponte-local --allow-run --save` | Caixa no terminal dele, `s`/`N` em 60 s; sem resposta = rejeita |
+| Autônomo | `npx ponte-local --auto --save` | Executa direto, loga `[AUTO] $ cmd`, trava anticatástrofe ativa |
 | **modo deus** | a IA pergunta NO CHAT após conectar e, com o aceite do usuário, envia `god_mode {"enabled":true}` | Igual ao autônomo: sem `s/N` (log `[deus] $ cmd`); trava anticatástrofe, lixeira e log continuam; desliga com `god_mode {"enabled":false}` — nada é digitado no terminal |
 
 Só o usuário pode trocar de modo (digitar o flag no terminal DELE). Peça com
-clareza, ex.: *"Ctrl+C no terminal do agente e rode `node agent.js --auto --save`
+clareza, ex.: *"Ctrl+C no terminal do agente e rode `npx ponte-local --auto --save`
 — isso me dá execução direta com a trava anticatástrofe, ok?"* (no Windows,
 `Ctrl+C` e o mesmo comando no PowerShell).
 
