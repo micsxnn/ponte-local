@@ -2265,6 +2265,81 @@ const ACTIONS = {
       throw new Error("Screenshot não suportado nesta plataforma: " + platform);
     }
     return { plataforma, dados: imagemBase64, tamanhoBytes: Buffer.byteLength(Buffer.from(imagemBase64, "base64")) };
+  screenshot_window: async (args) => {
+    const platform = process.platform;
+    let imagemBase64 = "";
+    let infoJanela = null;
+    if (platform === "linux") {
+      try {
+        let windowId = args.window_id || null;
+        if (!windowId && args.window_title) {
+          const result = execSync('xdotool search --name "' + args.window_title + '" | head -1', { encoding: 'utf8' }).trim();
+          windowId = result || null;
+        }
+        if (!windowId && args.window_class) {
+          const result = execSync('xdotool search --class "' + args.window_class + '" | head -1', { encoding: 'utf8' }).trim();
+          windowId = result || null;
+        }
+        if (!windowId) {
+          const wmctrl = execSync('wmctrl -l', { encoding: 'utf8' }).split('\n');
+          for (const linha of wmctrl) {
+            const partes = linha.split(/\s+/);
+            if (partes.length >= 2) {
+              const id = partes[0];
+              const titulo = (partes.slice(2).join(' ') || '');
+              if (args.window_title && titulo.toLowerCase().includes(args.window_title.toLowerCase())) {
+                windowId = id;
+                break;
+              }
+            }
+          }
+        }
+        if (windowId) {
+          const tmpPath = path.join(SCRIPT_DIR, "tmp-screenshot-window.png");
+          execSync('import -window ' + windowId + ' ' + tmpPath);
+          if (fs.existsSync(tmpPath)) {
+            const buf = fs.readFileSync(tmpPath);
+            fs.unlinkSync(tmpPath);
+            imagemBase64 = buf.toString("base64");
+            infoJanela = { id: windowId };
+            try {
+              const wmctrl = execSync('wmctrl -l', { encoding: 'utf8' }).split('\n');
+              for (const linha of wmctrl) {
+                const partes = linha.split(/\s+/);
+                if (partes[0] === windowId) {
+                  infoJanela.titulo = partes.slice(2).join(' ');
+                  break;
+                }
+              }
+            } catch (_) {}
+          } else {
+            throw new Error("Janela não encontrada ou captura falhou");
+          }
+        } else {
+          throw new Error("Nenhuma janela encontrada com os critérios fornecidos");
+        }
+      } catch (e) {
+        throw new Error("Falha ao capturar janela: " + (e && e.message ? e.message : String(e)));
+      }
+    } else if (platform === "win32") {
+      try {
+        const tmpPath = path.join(SCRIPT_DIR, "tmp-screenshot-window.png");
+        execSync('powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $list = [System.Windows.Forms.Screen]::AllScreens; foreach($s in $list) { if($s.Primary) { continue } }"', { timeout: 5000 });
+        throw new Error("Screenshot de janela não implementado para Windows neste momento");
+      } catch (e) {
+        if (e.message.includes("não implementado")) throw e;
+        throw new Error("Falha ao capturar janela no Windows: " + (e && e.message ? e.message : String(e)));
+      }
+    } else {
+      throw new Error("Screenshot de janela não suportado nesta plataforma: " + platform);
+    }
+    return { 
+      plataforma, 
+      dados: imagemBase64, 
+      tamanhoBytes: Buffer.byteLength(Buffer.from(imagemBase64, "base64")),
+      janela: infoJanela
+    };
+  },
   },
   },
 };
@@ -2387,6 +2462,7 @@ function rotuloAcao(a) {
     skill_update: "atualizações da skill",
     god_mode: "mudanças de modo",
     screenshot: "capturas de tela",
+    window_screenshot: "capturas de janela",
   };
   return rotulos[a] || 'ações "' + a + '"';
 }
