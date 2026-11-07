@@ -40,7 +40,11 @@
   ],
   "scripts": {
     "test": "node agente/teste-trava.cjs",
-    "test:trava": "node agente/teste-trava.cjs"
+    "test:trava": "node agente/teste-trava.cjs",
+    "release": "./publicar.sh",
+    "release:patch": "./publicar.sh patch",
+    "release:minor": "./publicar.sh minor",
+    "release:major": "./publicar.sh major"
   },
   "engines": {
     "node": ">=18"
