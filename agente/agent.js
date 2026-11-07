@@ -2243,6 +2243,29 @@ const ACTIONS = {
       stdout: corta150k(out.stdout),
       stderr: corta150k(out.stderr),
     };
+  screenshot: async () => {
+    const platform = process.platform;
+    let imagemBase64 = "";
+    if (platform === "linux") {
+      try {
+        const tmpPath = path.join(SCRIPT_DIR, "tmp-screenshot.png");
+        execFile("scrot", ["-q", "100", tmpPath], { timeout: 10000 }, (err) => {
+          if (err) throw err;
+        });
+        await sleep(500);
+        if (fs.existsSync(tmpPath)) {
+          const buf = fs.readFileSync(tmpPath);
+          fs.unlinkSync(tmpPath); // limpa arquivo temporário
+          imagemBase64 = buf.toString("base64");
+        }
+      } catch (e) {
+        throw new Error("Falha ao capturar screenshot: " + (e && e.message ? e.message : String(e)));
+      }
+    } else {
+      throw new Error("Screenshot não suportado nesta plataforma: " + platform);
+    }
+    return { plataforma, dados: imagemBase64, tamanhoBytes: Buffer.byteLength(Buffer.from(imagemBase64, "base64")) };
+  },
   },
 };
 
@@ -2363,6 +2386,7 @@ function rotuloAcao(a) {
     free_space: "consultas de espaço livre",
     skill_update: "atualizações da skill",
     god_mode: "mudanças de modo",
+    screenshot: "capturas de tela",
   };
   return rotulos[a] || 'ações "' + a + '"';
 }
