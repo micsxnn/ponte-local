@@ -10,3 +10,4 @@ relatorio-ponte*.txt
 node_modules/
 *.tgz
 .DS_Store
+RELEASE_NOTES.md

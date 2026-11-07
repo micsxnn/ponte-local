@@ -209,8 +209,18 @@ git commit -m "$MSG"
 ok "commit: $(git log --oneline -1)"
 
 git tag -a "$TAG" -m "$TAG — $MSG"
-git push origin main
-git push origin "$TAG"
+
+if ! git push origin main; then
+  erro "O push da branch falhou. O commit e a tag JÁ estão locais:
+     commit : $(git log --oneline -1)
+     tag    : $TAG
+  Depois de resolver (conflito, rede, auth), mande:
+     git push origin main && git push origin $TAG
+  e siga na mão a partir dai."
+fi
+if ! git push origin "$TAG"; then
+  erro "A tag $TAG não foi enviada. Mande: git push origin $TAG"
+fi
 ok "tag $TAG enviada"
 
 # ------------------------------------------------------------------ 4. npm publish
@@ -231,12 +241,20 @@ fi
 echo ""
 info "criando a release no GitHub..."
 
-TITULO="$TAG — agente v$VER_AGENTE_NOV: $MSG"
 ARQ_NOTES="$(mktemp)"
+RESUMO="$MSG"
 
 if [ -f RELEASE_NOTES.md ]; then
   cp RELEASE_NOTES.md "$ARQ_NOTES"
-  info "corpo: RELEASE_NOTES.md"
+  info "corpo: RELEASE_NOTES.md (local, não vai pro repo)"
+  # a primeira linha do arquivo vira o resumo do título da release
+  PRIMEIRA="$(head -n 1 RELEASE_NOTES.md | sed 's/^#*[[:space:]]*//' | cut -c1-120)"
+  [ -n "$PRIMEIRA" ] && RESUMO="$PRIMEIRA"
+  # se a linha já começa com "Agente ..." o título não repete "agente vX"
+  case "$PRIMEIRA" in
+    Agente\ *|agente\ *) RESUMO_E_COMPLETO=1 ;;
+    *) RESUMO_E_COMPLETO=0 ;;
+  esac
 else
   {
     echo "$MSG"
@@ -262,11 +280,21 @@ else
     echo "A SKILL.md se atualiza sozinha no agente (boot + a cada 60 s, com ETag/304)."
   } > "$ARQ_NOTES"
   info "corpo: automático (commits desde a última tag)"
+  RESUMO_E_COMPLETO=0
+fi
+
+if [ -f RELEASE_NOTES.md ]; then
+  aviso "RELEASE_NOTES.md é local (está no .gitignore) — some depois da release."
 fi
 
 # shellcheck disable=SC2064
 trap "rm -f '$ARQ_NOTES'" EXIT
 
+if [ "${RESUMO_E_COMPLETO:-0}" = "1" ]; then
+  TITULO="$TAG — $RESUMO"
+else
+  TITULO="$TAG — agente v$VER_AGENTE_NOV: $RESUMO"
+fi
 gh release create "$TAG" \
   --title "$TITULO" \
   --notes-file "$ARQ_NOTES" \

@@ -846,7 +846,7 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
   `--save` regrava a config sozinho.
 - **Atualizar o agente (instalação `npx`):** é automático — o `npx` resolve
   a versão mais nova do pacote a cada execução. Se o usuário quiser fixar:
-  `npx ponte-local@1.13.0 ...`.
+  `npx ponte-local@1.14.0 ...`.
 - **Atualizar o agente (instalação manual):** baixe o `agente/agent.js` novo
   do repo, envie ao PC com `write_binary` para `~/Downloads/` (ou
   `C:\Users\u\Downloads`), e lá:
@@ -861,6 +861,35 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 - **Cache do raw.githubusercontent:** logo após um commit novo, a versão nova
   pode levar ~5 min a aparecer; o `skill_update` devolve erro elegante
   ("skill remota sem marcador de versão") — tente de novo minutos depois.
+
+## 6.1 Publicar uma nova versão (o mantenedor do repo)
+
+O repo tem um script que faz o fluxo INTEIRO de release: bumpeia a versão,
+roda os testes, commita, cria a tag, faz push, **publica no npm** e cria a
+release no GitHub (com o `agent.js` anexado).
+
+```bash
+cd ~/Área\ de\ trabalho/ponte-local     # o repo
+./publicar.sh minor "adiciona a ação que_missing"
+./publicar.sh patch "corrige o X"
+./publicar.sh --dry-run minor "só pra ver"      # mostra o que faria
+```
+
+Credenciais: `npm` usa o `~/.npmrc`; `gh` usa `gh auth login` (ou
+`GH_TOKEN`). Release notes customizadas: copie
+`RELEASE_NOTES.exemplo.md` para `RELEASE_NOTES.md` e escreva o que quiser
+(a primeira linha vira o resumo do título). Sem ele, o corpo sai automático
+com os commits desde a última tag.
+
+**IMPORTANTE — o npm é um registry separado do GitHub:** commit e release
+NÃO atualizam o npm. Só o `npm publish` publica. Mas o `npx` revalida o
+registry a cada uso, então assim que publica, todo mundo que roda
+`npx ponte-local` pega a versão nova sem reinstalar nada. A propagação
+demora ~5-20 min.
+
+**Regra de versão:** a versão do **agente** (e do npm) é `1.x.y`; a tag do
+**repo** é `v2.x.y`. Bump `patch` no agente → bump `patch` na tag; bump
+`minor`/`major` → bump `minor` na tag.
 
 ## 7. Troubleshooting
 

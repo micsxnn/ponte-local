@@ -423,6 +423,60 @@ Abra issues e PRs. Relatos do agente em outras distros, no Windows e no Termux
 são os mais úteis; para mudanças maiores, descreva o caso de uso numa issue
 antes.
 
+### Publicar uma release (tudo numa tacada)
+
+O repositório tem um script que faz o fluxo inteiro de release: bumpeia a
+versão, roda os testes, commita, cria a tag, faz push, **publica no npm** e
+cria a release no GitHub (com o `agent.js` anexado).
+
+```bash
+./publicar.sh minor "adiciona a ação que_missing"
+./publicar.sh patch "corrige o X"
+./publicar.sh major  "quebra de compatibilidade"
+./publicar.sh --dry-run minor "só pra ver"   # mostra o que faria
+```
+
+Ou, pelos scripts do npm:
+
+```bash
+npm run release:minor -- "mensagem"
+npm run release:patch -- "mensagem"
+```
+
+**O que ele faz, na ordem:**
+
+1. checa repo limpo, branch `main`, `node`/`npm`/`gh` presentes e credenciais
+2. bumpeia a versão do **agente** (`package.json` + `agente/agent.js` +
+   `agente/teste-trava.cjs` + badge do README) e calcula a **tag do repo**
+3. roda `node agente/teste-trava.cjs` — se falhar, para tudo
+4. `git commit` + `git tag` + `git push`
+5. `npm publish` — o `npx` passa a servir a versão nova sozinho
+6. `gh release create` com o corpo no modelo das anteriores e o `agent.js`
+   anexado
+
+**Regra de versão:**
+
+| | Onde | Exemplo |
+|---|---|---|
+| Agente / npm | `package.json` + `agente/agent.js` | `1.14.0` → `1.15.0` |
+| Repo (tag) | GitHub | `v2.9.0` → `v2.10.0` |
+
+Bump `patch` no agente → bump `patch` na tag do repo. Bump `minor`/`major` no
+agente → bump `minor` na tag do repo.
+
+**Release notes customizadas:** copie
+[`RELEASE_NOTES.exemplo.md`](RELEASE_NOTES.exemplo.md) para
+`RELEASE_NOTES.md` (na raiz) e escreva o que quiser. A primeira linha vira o
+resumo do título da release. O arquivo é local (está no `.gitignore`) — não
+vai para o repo. Sem ele, o script monta o corpo automático com os commits
+desde a última tag.
+
+**Credenciais:** `npm` usa o `~/.npmrc`; `gh` usa `gh auth login` (ou
+`GH_TOKEN` no ambiente).
+
+> ⚠️ O npm propaga em ~5-20 min. Logo depois de publicar, `npm view
+> ponte-local versions` ainda pode mostrar só a versão antiga — é normal.
+
 ## Segurança
 
 Encontrou uma vulnerabilidade? **Não abra issue pública.** Siga a
