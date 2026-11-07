@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.14.0 (Windows + Linux + macOS + Termux)
+ * Ponte Local — Agente v1.15.0 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -99,7 +99,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
