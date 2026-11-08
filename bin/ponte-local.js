@@ -237,6 +237,7 @@ function imprimirAcoes(filtro, comoJson) {
     ["Binários", ["read_binary", "write_binary"]],
     ["Tela", ["screenshot", "screenshot_window"]],
     ["Mouse", ["mouse_position", "mouse_move", "mouse_click", "mouse_scroll", "mouse_drag"]],
+    ["Teclado", ["keyboard_type", "keyboard_key"]],
     ["Comando", ["run_command"]],
     ["Controle", ["god_mode", "skill_update", "task_done"]],
   ];

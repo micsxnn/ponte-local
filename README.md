@@ -30,7 +30,7 @@ npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 
 > **Você é uma IA** (Claude, ChatGPT, Gemini, Cursor, agente de código)? Leia
 > [`SKILL.md`](SKILL.md) primeiro. A skill traz o passo a passo de instalação,
-> o que pedir ao usuário, a tabela das 31 ações e as regras de segurança.
+> o que pedir ao usuário, a tabela das 33 ações e as regras de segurança.
 > Comece pela Regra de Ouro #0: pergunte se o PC é Windows ou Linux.
 
 ## Sumário
@@ -42,7 +42,7 @@ npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 5. [Os 4 modos do `run_command`](#os-4-modos-do-run_command)
 6. [Requisitos](#requisitos)
 7. [Primeiros passos](#primeiros-passos)
-8. [As 31 ações do agente](#as-31-ações-do-agente)
+8. [As 33 ações do agente](#as-33-ações-do-agente)
 9. [Estrutura do repositório](#estrutura-do-repositório)
 10. [Destaques por versão](#destaques-por-versão)
 11. [Perguntas frequentes](#perguntas-frequentes)
@@ -65,7 +65,7 @@ SSH, nada para configurar no roteador.
 
 | Componente | Onde roda | Tecnologia | Papel |
 |------------|-----------|------------|-------|
-| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 31 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
+| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 33 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
 | **Relay** — `ponte-store.ts` + rotas | na sua VM/servidor | Next.js (API routes) | fila por máquina (lane), sequência persistida em disco, painel de status |
 | **Operador** — `ponte.py` | na sua VM/servidor | Python 3, só biblioteca padrão | CLI para injetar comandos e ler resultados pelo terminal |
 
@@ -172,6 +172,34 @@ sudo dnf install ImageMagick xdotool  # Fedora
 > `screenshot_window` captura a janela **em foco** e avisa na resposta. No
 > **X11** e no **Windows** a janela pedida (por `window_title`, `window_class`
 > ou `window_id`) é capturada exatamente.
+
+### Só para as ações de teclado
+
+As ações de teclado (`keyboard_type`, `keyboard_key`) também são **zero
+dependências npm**, mas dependem de uma ferramenta de injeção de teclado:
+
+| Onde | Precisa de | Observação |
+|------|-----------|------------|
+| **Windows** | nada | PowerShell + `SendInput` (nativo) |
+| **Linux Wayland** | `ydotool` | `sudo pacman -S --needed ydotool` — e o usuário precisa estar no grupo `input` (`sudo usermod -aG input $USER`, relogar) |
+| **Linux X11** | `xdotool` | `sudo pacman -S --needed xdotool` |
+| **macOS** | `cliclick` | `brew install cliclick` |
+| **Termux** | `input` do Android | requer `INJECT_EVENTS` (aparelho rooteado) |
+
+```bash
+# Wayland (KDE, Hyprland, GNOME)
+sudo pacman -S --needed ydotool
+sudo usermod -aG input $USER   # relogue depois
+# X11
+sudo pacman -S --needed xdotool
+```
+
+> **O que o teclado é capaz de fazer (e o que a trava impede):** o texto
+> digitado passa pelo **mesmo `dangerCheck`** do `run_command` — digitar
+> `rm -rf /` num terminal é tão destrutivo quanto executar, e é recusado do
+> mesmo jeito. **Colar (ctrl+v) é bloqueado** (o conteúdo colado não passaria
+> pela trava) e atalhos que fecham janela ou reiniciam a máquina
+> (`alt+f4`, `ctrl+alt+delete`, `super+r`) também.
 
 ### Só para as ações de mouse
 
@@ -388,7 +416,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 >   console não congela mais o agente) e o `watchdog.bat` religa o agente
 >   sozinho se ele morrer.
 
-## As 31 ações do agente
+## As 33 ações do agente
 
 | Grupo | Ações |
 |-------|-------|
@@ -398,6 +426,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 | **Binários** | `read_binary` (por pedaços, sem teto de tamanho) · `write_binary` (até 8 MB, via `ponte.py pegar`/`enviar`) |
 | **Tela** | `screenshot` (tela inteira) · `screenshot_window` (uma janela, por título/classe/id) |
 | **Mouse** | `mouse_position` (onde está o cursor) · `mouse_move` · `mouse_click` · `mouse_scroll` · `mouse_drag` |
+| **Teclado** | `keyboard_type` (digita texto) · `keyboard_key` (atalhos: enter, tab, backspace, ctrl+c, ctrl+v...) |
 | **Comando** | `run_command` (com os modos acima) |
 | **Controle** | `god_mode` (liga/desliga as confirmações; a IA só ativa após o seu aceite no chat) · `skill_update` (força o download da SKILL.md; o agente também atualiza sozinho no boot e a cada 60 s) · `task_done` (fecha a tarefa: o agente grava o relatório TXT e abre na tela do usuário) |
 
@@ -436,7 +465,8 @@ ponte-local/
 
 | Componente | Versão | O que trouxe |
 |------------|--------|--------------|
-| Agente | **v1.14.0** (atual) | `mouse_position`, `mouse_move`, `mouse_click`, `mouse_scroll` e `mouse_drag`: a IA mexe no cursor do usuário (Windows/Linux/macOS/Termux, zero dependência npm). No X11 usa `xdotool`; no Wayland, `ydotool`/`dotool` (o `xdotool` mexe só no cursor do XWayland — a resposta avisa) |
+| Agente | **v1.16.0** (atual) | `keyboard_type` (digita texto) e `keyboard_key` (dispara atalhos): a IA mexe no teclado do usuário (Windows/Linux/macOS/Termux, zero dependência npm). O texto digitado passa pela mesma trava anticatástrofe do `run_command`; colar (ctrl+v) e atalhos destrutivos são bloqueados |
+| Agente | v1.14.0 | `mouse_position`, `mouse_move`, `mouse_click`, `mouse_scroll` e `mouse_drag`: a IA mexe no cursor do usuário (Windows/Linux/macOS/Termux, zero dependência npm). No X11 usa `xdotool`; no Wayland, `ydotool`/`dotool` (o `xdotool` mexe só no cursor do XWayland — a resposta avisa) |
 | Agente | v1.13.0 | `screenshot` e `screenshot_window`: print da tela e de uma janela (Linux/Windows/macOS/Termux, zero dependência npm — usa o que a distro já tem); no Wayland a janela em foco é capturada e a resposta avisa |
 | Agente | v1.12.0 | Continuidade das correções de segurança da v1.11.0 |
 | Agente | v1.11.0 | Auditoria de segurança: trava cobre `&&`, `--no-preserve-root`, `find -delete`, `xargs` destrutivo, `tee`/redirect para `/dev/*`, script baixado e executado direto no bash, `chmod/chown -R` de sistema e `rm` com `$VAR`/`..`; escopo valida `realpath` (symlink não fura a home); credenciais bloqueadas para leitura remota; timeout mata o grupo de processos; token aceito via `PONTE_AGENT_TOKEN`; config com permissão 0600 |

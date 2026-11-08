@@ -251,6 +251,26 @@ estiver no Wayland, diga isso ANTES de mandar a ação.
 ATENCAO: **Tela grande**: 4K em PNG passa de 9 MB e a ponte recusa. Use
 `{"format":"jpg","quality":60}` — fica ~10× menor.
 
+### Digitar no teclado — o agente PRECISA ENSINAR o usuário a instalar
+
+As ações `keyboard_type` e `keyboard_key` dependem de uma ferramenta de
+injeção de teclado que o sistema precisa ter.
+
+| Onde | Precisa de | Comando |
+|------|-----------|---------|
+| **Windows** | nada | PowerShell + SendInput já vêm no sistema |
+| **Linux Wayland** | `ydotool` | `sudo pacman -S --needed ydotool` + `sudo usermod -aG input $USER` (relogin) |
+| **Linux X11** | `xdotool` | `sudo pacman -S --needed xdotool` |
+| **macOS** | `cliclick` | `brew install cliclick` |
+
+**REGRA:** se a ação falhar por ferramenta ausente, a IA **DEVE** pedir ao
+usuário para instalar — nunca fingir que digitou.
+
+A trava continua valendo: digitar `rm -rf /` é tão destrutivo quanto
+executar, e é recusado. Colar (ctrl+v) e atalhos destrutivos (`alt+f4`,
+`ctrl+alt+delete`, `super+r`) são bloqueados. O teclado exige o modo
+habilitado — no supervisionado, o usuário aprova cada digitação.
+
 ### Mexer no mouse — o agente PRECISA ENSINAR o usuário a instalar
 
 As ações `mouse_move`, `mouse_click`, `mouse_scroll`, `mouse_drag` e
@@ -631,6 +651,8 @@ aceita ambos os estilos conforme o SO dele.
 | `mouse_click` | `{"x":1200,"y":800,"button":"left","count":1}` | Clica em (x, y). `button`: `left` (1), `middle` (2), `right` (3). `count`: cliques repetidos (duplo = 2) |
 | `mouse_scroll` | `{"amount":3,"direction":"down"}` | Rola. `direction`: `up`, `down`, `left`, `right`; `amount`: notches (padrão 3) |
 | `mouse_drag` | `{"x":100,"y":100,"x2":800,"y2":600}` | Arrasta de (x, y) até (x2, y2) com o botão pressionado |
+| `keyboard_type` | `{"text":"ola mundo"}` | Digita texto no teclado do usuário. O texto passa pela MESMA trava anticatástrofe do `run_command`. TAB dentro do texto é recusado |
+| `keyboard_key` | `{"key":"enter"}` | Dispara tecla ou atalho (`enter`, `tab`, `backspace`, `ctrl+c`...). Colar (ctrl+v) e atalhos destrutivos são bloqueados |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (abaixo) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | modo deus: liga (APENAS após o usuário aceitar NO CHAT — a IA pergunta, zero prompt no terminal) / desliga (direto) / registra recusa — seção própria abaixo |
 | `skill_update` | `{}` | Força o download da SKILL.md mais recente deste repo; devolve `atualizou`, `de`, `para`, `versaoLocal` (o agente também atualiza sozinho no boot e a cada 60 s) |

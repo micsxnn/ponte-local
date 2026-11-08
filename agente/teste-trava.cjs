@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Teste da trava anticatástrofe (TDD, v1.15.0) — roda com: node teste-trava.cjs
+// Teste da trava anticatástrofe (TDD, v1.16.0) — roda com: node teste-trava.cjs
 // Vetores vindos da auditoria paralela (subagente executou o dangerCheck real).
 const path = require("path");
 const os = require("os");
@@ -36,6 +36,14 @@ const BLOQUEAR = [
   ["rm -rf /etc", ctxLin, "regressão: /etc"],
   ["rm -rf /etc/", ctxLin, "regressão: /etc com barra"],
   [":(){ :|:& };:", ctxLin, "regressão: fork bomb"],
+  // v1.16.0: lacunas achadas ao add o teclado (valem pro run_command tambem)
+  ["chmod -R 777 /", ctxLin, "v1.16.0: chmod recursivo na raiz"],
+  ["chown -R root /", ctxLin, "v1.16.0: chown recursivo na raiz"],
+  ["chmod 777 /", ctxLin, "v1.16.0: chmod na raiz (sem -R)"],
+  ["chmod -R 777 /home/u", ctxLin, "v1.16.0: chmod recursivo na home"],
+  ["fdisk /dev/sda", ctxLin, "v1.16.0: particionador de disco"],
+  ["parted /dev/sda mklabel gpt", ctxLin, "v1.16.0: parted em dispositivo"],
+  ["sgdisk /dev/nvme0n1", ctxLin, "v1.16.0: sgdisk em dispositivo"],
 ];
 
 const PASSAR = [
@@ -101,9 +109,9 @@ if (typeof caminhoProtegido !== "function") {
   }
 }
 
-if (mod.VERSION !== "1.15.0") {
+if (mod.VERSION !== "1.16.0") {
   falhas++;
-  console.log("FALHOU: VERSION deveria ser 1.15.0, é %s", mod.VERSION);
+  console.log("FALHOU: VERSION deveria ser 1.16.0, é %s", mod.VERSION);
 }
 
 console.log(falhas === 0 ? "PASSOU — trava íntegra (%d vetores de bloqueio + %d de passagem)" : "RESULTADO: %d FALHA(S)", falhas === 0 ? BLOQUEAR.length : falhas, PASSAR.length);

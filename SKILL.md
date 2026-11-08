@@ -17,7 +17,7 @@ description: >-
   hospedar nada.
 ---
 
-<!-- skill-version: 4.2.0 -->
+<!-- skill-version: 4.3.0 -->
 
 # Ponte Local — operação remota do PC do usuário
 
@@ -477,6 +477,56 @@ voltar com "Não consegui capturar a tela" (ferramenta ausente), a IA **DEVE**:
 Ofereça caminho sem print: "se preferir não instalar nada, eu sigo sem
 tirar print — funciona igual".
 
+### Digitar no teclado — o agente PRECISA ENSINAR o usuário a instalar
+
+As ações `keyboard_type` e `keyboard_key` **não funcionam sozinhas**: elas
+dependem de uma ferramenta de injeção de teclado que o sistema precisa ter.
+O resto do agente é zero-dependências, mas o teclado não é.
+
+**REGRA:** se a ação voltar com erro de "ferramenta ausente" (ou "Não consegui
+digitar"), a IA **DEVE** pedir ao usuário para instalar — nunca fingir que
+digitou, nunca contornar com `run_command`.
+
+| Onde | Precisa de | Comando |
+|------|-----------|---------|
+| **Windows** | nada | PowerShell + SendInput já vêm no sistema |
+| **Linux Wayland** | `ydotool` | `sudo pacman -S --needed ydotool` + `sudo usermod -aG input $USER` (relogin) |
+| **Linux X11** | `xdotool` | `sudo pacman -S --needed xdotool` |
+| **macOS** | `cliclick` | `brew install cliclick` |
+| **Termux** | `input` do Android | requer aparelho rooteado (INJECT_EVENTS) |
+
+**Como descobrir a sessão gráfica** (X11 ou Wayland) — peça para o usuário
+rodar:
+
+```bash
+echo $XDG_SESSION_TYPE
+```
+
+**Diga assim ao usuário:** "para eu digitar no seu teclado, seu sistema
+precisa de uma ferramenta de injeção — no seu caso é `sudo pacman -S --needed
+ydotool`. É do sistema, não mexe em nada seu. Quer que eu instale?"
+
+ATENÇÃO: **A TRAVA CONTINUA VALENDO PARA O TECLADO.** Digitar `rm -rf /` num
+terminal é tão destrutivo quanto executar — e é recusado do mesmo jeito. O
+agente mantém um **buffer da linha do prompt**: o que a IA digita vai
+acumulando e a trava olha a linha inteira. Se a linha virar destrutiva, a
+digitação é recusada na hora.
+
+ATENÇÃO: **COLAR É BLOQUEADO** (`ctrl+v`): o conteúdo colado não passaria pela
+trava. A IA tem que **digitar** o texto, nunca colar.
+
+ATENÇÃO: **ATALHOS DESTRUTIVOS SÃO BLOQUEADOS**: `alt+f4` (fecha a janela e
+perde trabalho não salvo), `ctrl+alt+delete`, `ctrl+shift+delete`,
+`super+r`, `super+q`, `super+l`, `ctrl+w`.
+
+ATENÇÃO: **O TECLADO EXIGE O MODO HABILITADO** — igual ao `run_command`. No modo
+supervisionado, o usuário aprova **cada digitação** com `s`/`N` no terminal
+dele (60 s). No autônomo, vai direto, com a trava ativa.
+
+ATENÇÃO: **O AGENTE NÃO SABE EM QUE APP VAI DIGITAR** (terminal? editor? caixa
+de senha?). A trava presume um prompt de shell. Antes de digitar em algo
+sensível, a IA deve **ler a tela** (`screenshot`) para saber o que é.
+
 ### Mexer no mouse — o agente PRECISA ENSINAR o usuário a instalar
 
 As ações `mouse_move`, `mouse_click`, `mouse_scroll`, `mouse_drag` e
@@ -728,6 +778,8 @@ ambos os estilos conforme o SO dele.
 | `mouse_click` | `{"x":1200,"y":800,"button":"left","count":1}` | Clica em (x, y). `button`: `left` (1), `middle` (2), `right` (3). `count`: cliques repetidos (duplo = 2) |
 | `mouse_scroll` | `{"amount":3,"direction":"down"}` | Rola. `direction`: `up`, `down`, `left`, `right`; `amount`: notches (padrão 3) |
 | `mouse_drag` | `{"x":100,"y":100,"x2":800,"y2":600}` | Arrasta de (x, y) até (x2, y2) com o botão pressionado |
+| `keyboard_type` | `{"text":"ola mundo"}` | Digita texto no teclado do usuário (base64 não, é texto puro). O texto passa pela MESMA trava anticatástrofe do `run_command`: digitar `rm -rf /` num terminal é tão destrutivo quanto executar, e é recusado. TAB dentro do texto é recusado (no shell ele completa o comando e a trava não veria o resultado) |
+| `keyboard_key` | `{"key":"enter"}` | Dispara uma tecla ou atalho: `enter`, `tab`, `backspace`, `delete`, `escape`, `space`, `up`/`down`/`left`/`right`, `home`/`end`, `pageup`/`pagedown`, `f1`..`f12`, e combinações como `ctrl+c`, `ctrl+v`, `ctrl+shift+t`, `alt+f4`. **Colar (ctrl+v) e atalhos destrutivos são bloqueados** |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (§ 4.4) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | Protocolo da Lei 3 |
 | `skill_update` | `{}` | Força o download da SKILL.md deste repo (também roda sozinho no boot e a cada 60 s) |
@@ -865,6 +917,8 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 | Resultado total (agente) | recusado acima de ~10,5 MB ("refine o comando") |
 | `screenshot` / `screenshot_window` | base64 ≤ 9 MB — acima disso use `format:"jpg"` e `quality` menor |
 | `mouse_*` | coordenadas inteiras de -100.000 a 100.000; `count` de 1 a 10; `amount` de scroll de -1.000 a 1.000 |
+| `keyboard_type` | texto de até 4.000 caracteres; sem TAB; cada linha validada contra a trava |
+| `keyboard_key` | uma tecla ou combinação (`ctrl+shift+t`); colar e atalhos destrutivos bloqueados |
 | `resumo` do `task_done` | 4.000 caracteres |
 | Fila de comandos pendentes | 100 por lane |
 | Histórico de comandos / resultados | 2.000 / 400 |

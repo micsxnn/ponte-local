@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.15.0 (Windows + Linux + macOS + Termux)
+ * Ponte Local — Agente v1.16.0 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -78,6 +78,14 @@
  *    Wayland o ydotool/dotool, no Termux o `input` do Android, no macOS o
  *    cliclick. Coordenadas são inteiros validados e NUNCA entram num shell
  *    (execFile com array de args) — sem injeção possível.
+ *  - Teclado (v1.16.0): as ações keyboard_type (digita texto) e keyboard_key
+ *    (dispara atalhos: enter, tab, backspace, ctrl+c, ctrl+v...) mexem no
+ *    teclado do usuário. ZERO dependência npm: no Wayland o ydotool (uinput),
+ *    no X11 o xdotool, no Windows PowerShell + SendInput (nativo), no Termux
+ *    o `input` do Android. SEGURANÇA: o texto digitado passa pelo MESMO
+ *    dangerCheck do run_command (digitar "rm -rf /" num terminal é tão
+ *    destrutivo quanto executar) e a ação exige o modo habilitado — a
+ *    escalada continua física, digitada pelo usuário.
  *  - Segurança v1.11.0 (audit com subagentes + skills security-review/
  *    security-and-hardening): trava anticatástrofe cobre && no meio do
  *    comando, flags com hífen interno (--no-preserve-root), find -delete,
@@ -99,7 +107,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.15.0";
+const VERSION = "1.16.0";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -135,6 +143,13 @@ const SKILL_CHECK_MS = 60 * 1000; // no boot + a cada 60 s
 const SKILL_BACKOFF_MAX_MS = 15 * 60 * 1000; // teto do backoff em falhas seguidas
 
 let cfg = null; // preenchido no main()
+
+// BUFFER DE LINHA DO TECLADO (v1.16.0)
+// A trava anticatástrofe olha o texto digitado. Sem buffer, a IA burlaria
+// digitando "rm -rf" (inofensivo sozinho), depois "/", depois Enter — cada
+// parte passaria, mas a LINHA COMPLETA é destrutiva. O buffer acumula o que
+// foi digitado e o Enter valida a linha inteira, como um terminal de verdade.
+let bufferLinha = "";
 
 // ---------------------------------------------------------------- utilidades
 function stamp() {
@@ -1053,6 +1068,88 @@ function dangerCheck(cmdline, ctx) {
     return "execução de interpretador via pipe";
   if (/\b(chmod|chown)\b\s+(-R|--recursive)\b[^|;&]*\s+\/(etc|usr|boot|var|lib|bin|sbin|opt)\b/i.test(cmdline))
     return "chmod/chown recursivo em pasta do sistema";
+  // ---- v1.16.0: a lista e de "STRINGS perigosas"; o requisito real e
+  // "ACOES perigosas". Estes padroes executam um comando destrutivo
+  // ESCONDIDO dentro de outra coisa — e a travacao do run_command tambem
+  // os deixava passar.
+  //
+  // As regras olham o COMANDO PRINCIPAL de cada segmento (o primeiro token
+  // depois de "sudo"), nao a palavra solta: "echo shutdown" so imprime a
+  // palavra e tem que passar.
+  const principalDe = (seg) => {
+    const t = seg.trim().replace(/^(?:sudo\s+)+/i, "").replace(/^\(\s*/i, "").split(/\s+/)[0] || "";
+    return t.replace(/["']/g, "").toLowerCase();
+  };
+  const segmentosCmd = cmdline.split(/\n|;|&&|\|\||\||&/);
+  const algumPrincipal = (...nomes) => segmentosCmd.some((seg) => nomes.includes(principalDe(seg)));
+
+  // shell dentro de shell: bash -c 'rm -rf /'
+  if (/\b(?:ba|z|k|da|c)?sh\b\s+-c\s+['"]/.test(cmdline))
+    return "shell dentro de shell (-c) — o comando real fica escondido";
+  // find com -exec/-execdir rodando um destrutivo
+  if (/\bfind\b[^|;&]*\s-(?:exec|execdir)\b[^|;&]*\b(rm|dd|mkfs|shred|chmod|chown)\b/i.test(cmdline))
+    return "find com -exec destrutivo";
+  // execucao de script: sh x.sh, bash x.sh (o sh tem que ser o COMANDO)
+  if (algumPrincipal("sh", "bash", "zsh", "ksh", "dash", "csh", "tcsh") && /\.(?:sh|bash)\b/.test(cmdline))
+    return "execucao de script";
+  // download + execucao (o pipe ja e coberto; falta o && / ; / ||)
+  if (/\b(curl|wget)\b[^|;&]*\b(?:ba|z|k|da|c)?sh\b/i.test(cmdline))
+    return "download + execucao de script";
+  // derrubar a maquina (so quando e o comando principal)
+  if (algumPrincipal("shutdown", "reboot", "halt", "poweroff"))
+    return "desligar/reiniciar a maquina";
+  // parar/desabilitar servico (so quando e o comando principal)
+  if (algumPrincipal("systemctl") && /\bsystemctl\s+(?:stop|disable|mask)\b/i.test(cmdline))
+    return "parar/desabilitar servico";
+  // ler credenciais do sistema (so quando o cat e o comando principal)
+  if (algumPrincipal("cat") && /\/(?:etc\/shadow|etc\/sudoers)\b/.test(cmdline))
+    return "leitura de arquivo de credenciais";
+  // v1.16.0: chmod/chown na RAIZ ("/", com ou sem -R) e recursivo na HOME
+  // passavam — a regex acima so pegava /etc, /usr, /boot... A trava e o
+  // digitacao de teclado usam esta mesma funcao, entao a lacuna valia pros
+  // dois lados.
+  {
+    const ehRec = (seg) => /\b(chmod|chown)\b\s+(-R|--recursive)\b/i.test(seg);
+    // so o segmento em que chmod/chown e o COMANDO PRINCIPAL: "echo chmod /"
+    // so imprime a palavra e tem que passar
+    const segChmod = cmdline
+      .split(/\n|;|&&|\|\||\||&/)
+      .find((seg) => {
+        if (!/\b(chmod|chown)\b/i.test(seg)) return false;
+        const primeiro = (seg.trim().replace(/^(?:sudo\s+)+/i, "").split(/\s+/)[0] || "").replace(/["']/g, "").toLowerCase();
+        return primeiro === "chmod" || primeiro === "chown";
+      });
+    if (segChmod) {
+      const recursivo = ehRec(segChmod);
+      const toksChmod = segChmod.trim().split(/\s+/);
+      for (const t of toksChmod) {
+        if (t.startsWith("-")) continue;
+        const limpo = t.replace(/["']/g, "");
+        if (!limpo) continue;
+        // "/" e "/*" sao a raiz; "/." e "/.." tambem (a mesma raiz, escrito
+        // de outro jeito) — e "$HOME" e a home
+        const ehRaiz = limpo === "/" || limpo === "/*" || limpo === "/." || limpo === "/..";
+        let ehHome = false;
+        if (homeRes) {
+          const exp = /^~/.test(limpo) ? path.join(homeRes, limpo.slice(1)) : limpo;
+          const resolvido = path.isAbsolute(exp) ? path.resolve(exp) : path.resolve(cwdRes || homeRes, exp);
+          ehHome = resolvido === homeRes;
+        }
+        // variavel nao resolvida: o alvo real e desconhecido (mesma regra
+        // do rm recursivo)
+        if (/\$/.test(limpo))
+          return "chmod/chown com variavel nao resolvida (" + t + ") — use caminho literal";
+        // na raiz, com ou sem recursivo, muda a permissão de tudo: catástrofe
+        if (ehRaiz) return "chmod/chown na raiz do sistema";
+        // na home, so quando e recursivo (o resto da home e do usuario)
+        if (ehHome && recursivo) return "chmod/chown recursivo na sua home";
+      }
+    }
+  }
+  // particionador de disco: mesma classe do mkfs/wipefs (formata ou
+  // apaga a tabela de particoes do dispositivo)
+  if (/\b(fdisk|sfdisk|cfdisk|parted|gdisk|sgdisk)\b/i.test(cmdline) && /\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
+    return "particionador de disco (fdisk/parted/gdisk em dispositivo)";
 
   // rm recursivo em alvo de sistema inteiro — divide por ; | && || e nova
   // linha (&& entrou na v1.11.0: "echo oi && rm -rf /" burlava o split)
@@ -2577,6 +2674,617 @@ async function executarMouse(op, opts) {
   return resp;
 }
 
+// ------------------------------------------------------- teclado (v1.16.0)
+// A IA digita no teclado do usuário e dispara atalhos. Como as ações de
+// mouse e de screenshot, ZERO dependência npm: usa o que o sistema tem.
+//
+//  - Linux/Wayland: ydotool (uinput) → wtype → xdotool (X11)
+//  - Linux/X11:     xdotool
+//  - Windows:       PowerShell + user32 (SendInput) — nativo, sem dependência
+//  - Termux:        `input` do Android (keyevent/text)
+//
+// SEGURANÇA — o texto digitado passa pelo MESMO dangerCheck do run_command:
+// digitar "rm -rf /" num terminal é tão destrutivo quanto executar isso. E a
+// ação exige o modo habilitado (cfg.run), igual ao run_command: subir a
+// escalada é FÍSICO, digitado pelo usuário no terminal dele.
+//
+// Coordenadas/texto NUNCA entram num shell: tudo via execFile com array de
+// argumentos, sem shell.
+
+const TECLAS_ESPECIAIS = {
+  enter: "enter", retorno: "enter", return: "enter", cr: "enter",
+  tab: "tab", tabulacao: "tab",
+  backspace: "backspace", bs: "backspace",
+  delete: "delete", del: "delete",
+  escape: "escape", esc: "escape",
+  space: "space", espaco: "space",
+  shift: "shift", ctrl: "ctrl", control: "ctrl", alt: "alt",
+  altgr: "altgr", super: "super", meta: "super", win: "super", cmd: "super",
+  up: "up", seta_cima: "up", down: "down", seta_baixo: "down",
+  left: "left", seta_esq: "left", right: "right", seta_dir: "right",
+  home: "home", end: "end", pageup: "pageup", pagedown: "pagedown",
+  insert: "insert", capslock: "capslock", menu: "menu", pause: "pause",
+  printscreen: "printscreen", scrolllock: "scrolllock", numlock: "numlock",
+};
+
+// keycodes do kernel (linux/input-event-codes.h) — o ydotool usa esses
+const KEYCODES_LINUX = {
+  escape: 1, esc: 1,
+  backspace: 14, tab: 15, enter: 28, cr: 28,
+  leftctrl: 29, ctrl: 29, control: 29,
+  leftshift: 42, shift: 42,
+  leftalt: 56, alt: 56,
+  space: 57,
+  f1: 59, f2: 60, f3: 61, f4: 62, f5: 63, f6: 64,
+  f7: 65, f8: 66, f9: 67, f10: 68,
+  f11: 87, f12: 88,
+  rightctrl: 97,
+  home: 102, up: 103, pageup: 104, left: 105, right: 106,
+  end: 107, down: 108, pagedown: 109, insert: 110, delete: 111,
+  numlock: 69, scrolllock: 70, sysrq: 99, pause: 119,
+  leftmeta: 125, super: 125, meta: 125, win: 125, cmd: 125,
+  rightmeta: 126, menu: 139,
+};
+
+// teclas de função: F1..F12 (o ydotool e o xdotool usam nomes proprios)
+const TECLAS_F = /^f([1-9]|1[0-2])$/i;
+
+// letras e digitos: keycode do kernel (linux/input-event-codes.h).
+// A letra MINUSCULA usa o mesmo keycode da maiuscula — quem faz a diferenca
+// e o Shift. Sem este mapa, "ctrl+c" nao tinha keycode e o atalho falhava.
+const KEYCODES_LETRAS = {
+  a: 30, b: 48, c: 46, d: 32, e: 18, f: 33, g: 34, h: 35, i: 23, j: 36,
+  k: 37, l: 38, m: 50, n: 49, o: 24, p: 25, q: 16, r: 19, s: 31, t: 20,
+  u: 22, v: 47, w: 17, x: 45, y: 21, z: 44,
+  "0": 11, "1": 2, "2": 3, "3": 4, "4": 5, "5": 6, "6": 7, "7": 8, "8": 9, "9": 10,
+};
+
+// nome canonico de uma tecla
+function normalizarTecla(t) {
+  const s = String(t == null ? "" : t).toLowerCase().trim().replace(/[\s-]+/g, "_");
+  if (!s) throw new Error("Tecla vazia");
+  if (TECLAS_ESPECIAIS[s]) return TECLAS_ESPECIAIS[s];
+  if (TECLAS_F.test(s)) return s.toLowerCase();
+  if (/^f\d{1,2}$/.test(s)) {
+    const n = Number(s.slice(1));
+    if (n >= 1 && n <= 12) return "f" + n;
+  }
+  // caractere único = a própria tecla
+  if ([...s].length === 1) return s;
+  throw new Error(
+    'Tecla desconhecida: "' + t + '" — use enter, tab, backspace, delete, escape, ' +
+      "space, shift, ctrl, alt, super, up, down, left, right, home, end, " +
+      "pageup, pagedown, insert, f1..f12 ou um caractere único"
+  );
+}
+
+// nome de tecla -> keycode do kernel (ydotool)
+function keycodeLinux(nome) {
+  // o mapa vem PRIMEIRO: F11=87 e F12=88 nao seguem a formula 58+N
+  // (que so vale ate F10 — F11 daria 69 = KEY_NUMLOCK)
+  const c = KEYCODES_LINUX[nome];
+  if (c) return c;
+  if (TECLAS_F.test(nome)) return 58 + Number(nome.slice(1));
+  const letra = KEYCODES_LETRAS[nome];
+  if (letra !== undefined) return letra;
+  throw new Error('Tecla sem keycode no Linux: "' + nome + '"');
+}
+
+// nome de tecla -> nome de tecla do xdotool (type/key)
+function nomeXdotool(nome) {
+  const mapa = {
+    enter: "Return", return: "Return", cr: "Return",
+    tab: "Tab", backspace: "BackSpace", delete: "Delete", del: "Delete",
+    escape: "Escape", esc: "Escape", space: "space",
+    shift: "shift", ctrl: "ctrl", control: "ctrl", alt: "alt",
+    altgr: "ISO_Level3_Shift", super: "super", meta: "super",
+    win: "super", cmd: "super",
+    up: "Up", down: "Down", left: "Left", right: "Right",
+    home: "Home", end: "End", pageup: "Prior", pagedown: "Next",
+    insert: "Insert", capslock: "Caps_Lock", menu: "Menu", pause: "Pause",
+    printscreen: "Print", scrolllock: "Scroll_Lock", numlock: "Num_Lock",
+  };
+  if (mapa[nome]) return mapa[nome];
+  if (TECLAS_F.test(nome)) return nome.toUpperCase();
+  return nome;
+}
+
+// nome de tecla -> Virtual Key do Windows (user32)
+const VK_WINDOWS = {
+  enter: 0x0D, return: 0x0D, cr: 0x0D,
+  tab: 0x09, backspace: 0x08, delete: 0x2E, del: 0x2E,
+  escape: 0x1B, esc: 0x1B, space: 0x20,
+  shift: 0x10, ctrl: 0x11, control: 0x11, alt: 0x12,
+  altgr: 0x12, super: 0x5B, meta: 0x5B, win: 0x5B, cmd: 0x5B,
+  up: 0x26, down: 0x28, left: 0x25, right: 0x27,
+  home: 0x24, end: 0x23, pageup: 0x21, pagedown: 0x22, insert: 0x2D,
+  printscreen: 0x2C, scrolllock: 0x91, numlock: 0x90, pause: 0x13,
+  capslock: 0x14, menu: 0x5D,
+};
+const VK_F = { f1: 0x70, f2: 0x71, f3: 0x72, f4: 0x73, f5: 0x74, f6: 0x75, f7: 0x76, f8: 0x77, f9: 0x78, f10: 0x79, f11: 0x7A, f12: 0x7B };
+
+// VK de letras (A-Z = 0x41..0x5A) e digitos (0-9 = 0x30..0x39).
+// Sem este mapa, "ctrl+c" no Windows era impossivel: vkWindows("c") lancava.
+const VK_LETRAS = {
+  a: 0x41, b: 0x42, c: 0x43, d: 0x44, e: 0x45, f: 0x46, g: 0x47, h: 0x48,
+  i: 0x49, j: 0x4A, k: 0x4B, l: 0x4C, m: 0x4D, n: 0x4E, o: 0x4F, p: 0x50,
+  q: 0x51, r: 0x52, s: 0x53, t: 0x54, u: 0x55, v: 0x56, w: 0x57, x: 0x58,
+  y: 0x59, z: 0x5A,
+  "0": 0x30, "1": 0x31, "2": 0x32, "3": 0x33, "4": 0x34,
+  "5": 0x35, "6": 0x36, "7": 0x37, "8": 0x38, "9": 0x39,
+};
+
+function vkWindows(nome) {
+  if (VK_F[nome]) return VK_F[nome];
+  const v = VK_WINDOWS[nome];
+  if (v) return v;
+  const letra = VK_LETRAS[nome];
+  if (letra !== undefined) return letra;
+  throw new Error('Tecla sem VK no Windows: "' + nome + '"');
+}
+
+// separa "ctrl+c" em ["ctrl","c"], "Ctrl+Shift+T" em ["ctrl","shift","t"]
+function parseAtalho(spec) {
+  const partes = String(spec == null ? "" : spec)
+    .split("+")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (!partes.length) throw new Error("Atalho vazio");
+  const teclas = partes.map(normalizarTecla);
+  // a última é a tecla principal; as demais são modificadores
+  const modificadores = teclas.slice(0, -1);
+  const principal = teclas[teclas.length - 1];
+  const modsValidos = ["ctrl", "shift", "alt", "altgr", "super"];
+  for (const m of modificadores) {
+    if (!modsValidos.includes(m))
+      throw new Error('Modificador inválido: "' + m + '" — use ctrl, shift, alt, altgr ou super');
+  }
+  return { modificadores: modificadores, principal: principal };
+}
+
+// ---------------------------------------------------------------- Linux
+async function tecladoLinuxType(texto) {
+  const erros = [];
+  const wayland = ehSessaoWayland();
+
+  // 1) ydotool: funciona em Wayland (uinput) e em X11
+  const y = await executarBin("ydotool", ["type", "--", texto], 20000);
+  if (y.code === 0) return { ok: true, ferramenta: "ydotool", caracteres: texto.length };
+  erros.push(y.faltaBinario ? "ydotool não instalado" : "ydotool: " + (y.stderr || "").trim().split("\n")[0].slice(0, 80));
+
+  // 2) wtype: wlroots, digita texto direto (Wayland)
+  const w = await executarBin("wtype", ["--", texto], 15000);
+  if (w.code === 0) return { ok: true, ferramenta: "wtype", caracteres: texto.length };
+  erros.push(w.faltaBinario ? "wtype não instalado" : "wtype: " + (w.stderr || "").trim().split("\n")[0].slice(0, 80));
+
+  // 3) xdotool: X11
+  const x = await executarBin("xdotool", ["type", "--clearmodifiers", "--", texto], 20000);
+  if (x.code === 0) return { ok: true, ferramenta: "xdotool", caracteres: texto.length };
+  erros.push(x.faltaBinario ? "xdotool não instalado" : "xdotool: " + (x.stderr || "").trim().split("\n")[0].slice(0, 80));
+
+  return { ok: false, erros: erros };
+}
+
+async function tecladoLinuxKey(atalho) {
+  const erros = [];
+  const { modificadores, principal } = parseAtalho(atalho);
+  const wayland = ehSessaoWayland();
+
+  // ydotool: keycodes, com :1 = pressionado e :0 = solto
+  const seq = [];
+  for (const m of modificadores) seq.push(keycodeLinux(m) + ":1");
+  seq.push(keycodeLinux(principal) + ":1");
+  seq.push(keycodeLinux(principal) + ":0");
+  for (const m of modificadores.slice().reverse()) seq.push(keycodeLinux(m) + ":0");
+  const y = await executarBin("ydotool", ["key"].concat(seq), 15000);
+  if (y.code === 0)
+    return { ok: true, ferramenta: "ydotool", atalho: modificadores.concat([principal]).join("+") };
+  erros.push(y.faltaBinario ? "ydotool não instalado" : "ydotool: " + (y.stderr || "").trim().split("\n")[0].slice(0, 80));
+
+  // xdotool: key --clearmodifiers ctrl+c
+  const xargs = ["key", "--clearmodifiers"];
+  for (const m of modificadores) xargs.push(nomeXdotool(m));
+  xargs.push(nomeXdotool(principal));
+  const x = await executarBin("xdotool", xargs, 15000);
+  if (x.code === 0)
+    return { ok: true, ferramenta: "xdotool", atalho: modificadores.concat([principal]).join("+") };
+  erros.push(x.faltaBinario ? "xdotool não instalado" : "xdotool: " + (x.stderr || "").trim().split("\n")[0].slice(0, 80));
+
+  return { ok: false, erros: erros };
+}
+
+// ---------------------------------------------------------------- Windows
+// SendInput:unicode digita qualquer caractere (inclusive acento e emoji);
+// SendInput:vk dispara teclas de verdade (Ctrl+C, Enter, F5...).
+const PS_TECLADO = [
+  "param([string]$Modo,[string]$Texto,[string]$Atalho,[string]$VK,[string]$Mods)",
+  "$ErrorActionPreference = 'Stop'",
+  "Add-Type -AssemblyName System.Windows.Forms",
+  "$src = @'",
+  "using System;",
+  "using System.Text;",
+  "using System.Runtime.InteropServices;",
+  "public class PonteTeclado {",
+  "  [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public InputUnion U; }",
+  "  [StructLayout(LayoutKind.Explicit)] public struct InputUnion {",
+  "    [FieldOffset(0)] public KEYBDINPUT ki;",
+  "    [FieldOffset(0)] public MOUSEINPUT mi;",
+  "    [FieldOffset(0)] public HARDWAREINPUT hi;",
+  "  }",
+  "  [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }",
+  "  [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }",
+  "  [StructLayout(LayoutKind.Sequential)] public struct HARDWAREINPUT { public uint uMsg; public ushort wParamL; public ushort wParamH; }",
+  "  [DllImport(\"user32.dll\", SetLastError = true)] public static extern uint SendInput(uint n, INPUT[] p, int cb);",
+  "  public const uint KEYEVENTF_KEYUP = 0x0002;",
+  "  public const uint KEYEVENTF_UNICODE = 0x0004;",
+  "}",
+  "'@",
+  "Add-Type -TypeDefinition $src",
+  "function Tecla-Down($vk) {",
+  "  $i = New-Object PonteTeclado+INPUT",
+  "  $i.type = 1",
+  "  $i.U.ki.wVk = [uint16]$vk",
+  "  $i.U.ki.wScan = 0",
+  "  $i.U.ki.dwFlags = 0",
+  "  $i.U.ki.time = 0",
+  "  $i.U.ki.dwExtraInfo = [IntPtr]::Zero",
+  "  [void][PonteTeclado]::SendInput(1, @($i), [System.Runtime.InteropServices.Marshal]::SizeOf([type]([PonteTeclado+INPUT])))",
+  "}",
+  "function Tecla-Up($vk) {",
+  "  $i = New-Object PonteTeclado+INPUT",
+  "  $i.type = 1",
+  "  $i.U.ki.wVk = [uint16]$vk",
+  "  $i.U.ki.wScan = 0",
+  "  $i.U.ki.dwFlags = [PonteTeclado]::KEYEVENTF_KEYUP",
+  "  $i.U.ki.time = 0",
+  "  $i.U.ki.dwExtraInfo = [IntPtr]::Zero",
+  "  [void][PonteTeclado]::SendInput(1, @($i), [System.Runtime.InteropServices.Marshal]::SizeOf([type]([PonteTeclado+INPUT])))",
+  "}",
+  "function Char-Unicode($ch) {",
+  "  $i = New-Object PonteTeclado+INPUT",
+  "  $i.type = 1",
+  "  $i.U.ki.wVk = 0",
+  "  $i.U.ki.wScan = [uint16][char]$ch",
+  "  $i.U.ki.dwFlags = [PonteTeclado]::KEYEVENTF_UNICODE",
+  "  $i.U.ki.time = 0",
+  "  $i.U.ki.dwExtraInfo = [IntPtr]::Zero",
+  "  [void][PonteTeclado]::SendInput(1, @($i), [System.Runtime.InteropServices.Marshal]::SizeOf([type]([PonteTeclado+INPUT])))",
+  "  $j = New-Object PonteTeclado+INPUT",
+  "  $j.type = 1",
+  "  $j.U.ki.wVk = 0",
+  "  $j.U.ki.wScan = [uint16][char]$ch",
+  "  $j.U.ki.dwFlags = ([PonteTeclado]::KEYEVENTF_UNICODE -bor [PonteTeclado]::KEYEVENTF_KEYUP)",
+  "  $j.U.ki.time = 0",
+  "  $j.U.ki.dwExtraInfo = [IntPtr]::Zero",
+  "  [void][PonteTeclado]::SendInput(1, @($j), [System.Runtime.InteropServices.Marshal]::SizeOf([type]([PonteTeclado+INPUT])))",
+  "}",
+  "if ($Modo -eq 'type') {",
+  "  foreach ($ch in $Texto.ToCharArray()) {",
+  "    Char-Unicode $ch",
+  "    Start-Sleep -Milliseconds 8",
+  "  }",
+  "  exit 0",
+  "}",
+  "$mods = @()",
+  "if ($Mods -ne '') { $mods = $Mods -split ',' }",
+  "$vk = [int]$VK",
+  "foreach ($m in $mods) {",
+  "  if ($m -eq 'ctrl') { Tecla-Down 0x11 }",
+  "  elseif ($m -eq 'shift') { Tecla-Down 0x10 }",
+  "  elseif ($m -eq 'alt') { Tecla-Down 0x12 }",
+  "  elseif ($m -eq 'super') { Tecla-Down 0x5B }",
+  "}",
+  "Tecla-Down $vk",
+  "Start-Sleep -Milliseconds 20",
+  "Tecla-Up $vk",
+  "if ($mods -contains 'super') { Tecla-Up 0x5B }",
+  "if ($mods -contains 'alt') { Tecla-Up 0x12 }",
+  "if ($mods -contains 'shift') { Tecla-Up 0x10 }",
+  "if ($mods -contains 'ctrl') { Tecla-Up 0x11 }",
+  "",
+].join("\n");
+
+async function tecladoWindowsType(texto) {
+  const ps1 = caminhoTemp("teclado.ps1");
+  try {
+    fs.writeFileSync(ps1, PS_TECLADO, "utf8");
+    const r = await executarPowershell(ps1, ["-Modo", "type", "-Texto", texto], 60000);
+    if (!r.ok) {
+      const msg = (r.stderr || r.stdout || "falhou").trim().split("\n")[0].slice(0, 140);
+      return { ok: false, erros: ["PowerShell/SendInput: " + msg] };
+    }
+    return { ok: true, ferramenta: "powershell/SendInput", caracteres: texto.length };
+  } catch (e) {
+    return { ok: false, erros: ["falha ao rodar PowerShell: " + (e && e.message ? e.message : String(e))] };
+  } finally {
+    try {
+      fs.unlinkSync(ps1);
+    } catch (_) {}
+  }
+}
+
+async function tecladoWindowsKey(atalho) {
+  const { modificadores, principal } = parseAtalho(atalho);
+  const ps1 = caminhoTemp("teclado.ps1");
+  try {
+    fs.writeFileSync(ps1, PS_TECLADO, "utf8");
+    const modsWin = { ctrl: "ctrl", shift: "shift", alt: "alt", altgr: "alt", super: "super" };
+    const mods = modificadores.map((m) => modsWin[m]).join(",");
+    const r = await executarPowershell(
+      ps1,
+      ["-Modo", "key", "-VK", String(vkWindows(principal)), "-Mods", mods],
+      40000
+    );
+    if (!r.ok) {
+      const msg = (r.stderr || r.stdout || "falhou").trim().split("\n")[0].slice(0, 140);
+      return { ok: false, erros: ["PowerShell/SendInput: " + msg] };
+    }
+    return { ok: true, ferramenta: "powershell/SendInput", atalho: modificadores.concat([principal]).join("+") };
+  } catch (e) {
+    return { ok: false, erros: ["falha ao rodar PowerShell: " + (e && e.message ? e.message : String(e))] };
+  } finally {
+    try {
+      fs.unlinkSync(ps1);
+    } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------------- Termux
+async function tecladoTermuxType(texto) {
+  // `input text` nao aceita espacos como argumento separado: usa %s
+  const escapado = texto.replace(/ /g, "%s");
+  const r = await executarBin("input", ["text", escapado], 30000);
+  if (r.code === 0) return { ok: true, ferramenta: "input text", caracteres: texto.length };
+  return { ok: false, erros: ["input text falhou: " + (r.stderr || "").trim().split("\n")[0].slice(0, 80)] };
+}
+
+async function tecladoTermuxKey(atalho) {
+  const { modificadores, principal } = parseAtalho(atalho);
+  // keyevent do Android: KEYCODE_ENTER=66, TAB=61, DEL=67, ESCAPE=111,
+  // DPAD_UP=19, DOWN=20, LEFT=21, RIGHT=22
+  const codigos = {
+    enter: 66, return: 66, tab: 61, backspace: 67, delete: 67,
+    escape: 111, esc: 111, space: 62,
+    up: 19, down: 20, left: 21, right: 22,
+    home: 122, end: 123, pageup: 92, pagedown: 93,
+  };
+  const meta = {
+    ctrl: 113, // KEYCODE_CTRL_LEFT
+    shift: 59, // KEYCODE_SHIFT_LEFT
+    alt: 57, // KEYCODE_ALT_LEFT
+    altgr: 113, // KEYCODE_CTRL_LEFT (AltGr = Ctrl+Alt no Android)
+    super: 117, // KEYCODE_META_LEFT
+  };
+  let principalCodigo = codigos[principal];
+  if (principalCodigo === undefined) {
+    // caractere: no Android, digita via `input text`
+    const r = await executarBin("input", ["text", principal.replace(/ /g, "%s")], 15000);
+    return r.code === 0
+      ? { ok: true, ferramenta: "input text", atalho: principal }
+      : { ok: false, erros: ["input text falhou"] };
+  }
+  // "input keyevent" faz press+release de CADA tecla: o modificador ja foi
+  // solto quando a tecla principal entra, entao ctrl+c nao virava ctrl+c.
+  // "input keycombination" pressiona todas juntas — e o jeito certo.
+  const combo = modificadores.map((m) => meta[m]).concat([principalCodigo]);
+  const r = await executarBin("input", ["keycombination"].concat(combo.map(String)), 15000);
+  if (r.code === 0)
+    return { ok: true, ferramenta: "input keycombination", atalho: modificadores.concat([principal]).join("+") };
+  return {
+    ok: false,
+    erros: ["input keycombination falhou: " + (r.stderr || "").trim().split("\n")[0].slice(0, 80)],
+  };
+}
+
+// ---------------------------------------------------------------- buffer de linha
+// A trava anticatástrofe olha o TEXTO. Sem buffer, a IA burlaria digitando
+// "rm -rf" (inofensivo sozinho), depois "/", depois Enter — cada parte
+// passaria, mas a LINHA COMPLETA e destrutiva. O buffer modela a linha do
+// prompt e o Enter valida a linha inteira, como um terminal de verdade.
+//
+// O buffer e um MODELO do prompt, nao a verdade: o shell expande (~, $VAR,
+// globs, TAB). Por isso o que a IA digita passa pela trava SEMPRE, e o que
+// ela cola (ctrl+v) e bloqueado — colar e o bypass classico.
+
+// teto: o buffer nao cresce sem limite (DoS de memoria/payload)
+const TECLADO_MAX_BUFFER = 4000;
+
+// atalhos que fecham janela / reiniciam / apagam — nao sao "digitar", sao
+// "destruir o estado do usuario". Bloqueados mesmo com o modo ligado.
+const ATALHOS_BLOQUEADOS = {
+  "alt+f4": "fecha a janela (perde trabalho nao salvo)",
+  "ctrl+alt+delete": "reinicia a maquina / abre o gerenciador de tarefa",
+  "ctrl+shift+delete": "apaga dados do sistema",
+  "super+r": "reinicia o desktop",
+  "super+q": "encerra a sessao",
+  "super+l": "trava a tela",
+  "ctrl+w": "fecha a aba",
+};
+
+// devolve o texto da linha atual (o que o Enter vai executar)
+function linhaAtual() {
+  return bufferLinha.replace(/\s+$/, "");
+}
+
+// um Enter limpa a linha (o comando foi executado)
+function bufferAcumula(texto) {
+  bufferLinha += texto;
+  if (bufferLinha.length > TECLADO_MAX_BUFFER)
+    bufferLinha = bufferLinha.slice(-TECLADO_MAX_BUFFER);
+  // newline no texto digitado tambem fecha a linha
+  if (texto.includes("\n")) bufferLinha = "";
+}
+
+function bufferLimpa() {
+  bufferLinha = "";
+}
+
+// valida uma linha do prompt contra a trava. devolve o motivo do bloqueio
+// ou null se a linha pode ser executada.
+function validarLinhaDigitada(linha) {
+  if (!linha || !linha.trim()) return null;
+  return dangerCheck(linha, { home: cfg.home, cwd: cfg.home });
+}
+
+// ---------------------------------------------------------------- ação
+async function executarTeclado(op, opts) {
+  const plataforma = process.platform;
+
+  // ---- TRAVA DE SEGURANÇA ----
+  // Digitar "rm -rf /" num terminal é tão destrutivo quanto executar. O
+  // texto passa pelo MESMO dangerCheck do run_command, e a ação exige o
+  // modo habilitado (cfg.run) — a escalada é física, digitada pelo
+  // usuário no terminal dele.
+  if (!cfg.run)
+    throw new Error(
+      "Teclado DESLIGADO. No terminal do agente: Ctrl+C e religue com " +
+        "npx ponte-local start --allow-run --save (supervisionado, pede s/N a cada tecla) " +
+        "ou --auto --save (autônomo, com a trava anticatástrofe ativa)"
+    );
+
+  if (op === "type") {
+    const texto = String(opts.text == null ? "" : opts.text);
+    if (!texto) throw new Error("Texto vazio — use {\"text\":\"o que digitar\"}");
+    if (texto.length > 4000) throw new Error("Texto longo demais (" + texto.length + " caracteres, máximo 4000)");
+    // TAB completa o comando no shell: o buffer nao reflete a expansao,
+    // entao a trava nao conseguiria ver o comando real. Digite o texto sem
+    // TAB e use keyboard_key {"key":"tab"} (que valida a linha antes).
+    if (texto.includes("\t"))
+      throw new Error(
+        "TAB dentro do texto e recusado: no shell ele COMPLETA o comando e a " +
+          "trava nao veria o resultado. Digite sem TAB e use " +
+          "keyboard_key {\"key\":\"tab\"}."
+      );
+    // TRAVA: valida CADA LINHA do texto, considerando o que ja estava no
+    // buffer. Um "\n" no meio do texto e um Enter no terminal — entao a
+    // linha seguinte e validada como linha nova (o "\n" fecha a anterior).
+    const partes = texto.split("\n");
+    let acumulado = bufferLinha;
+    for (const parte of partes) {
+      const perigo = validarLinhaDigitada(acumulado + parte);
+      if (perigo)
+        throw new Error(
+          "Digitação BLOQUEADA pela trava anticatástrofe (" + perigo + "). " +
+            "O mesmo texto que o run_command recusaria é recusado aqui: digitar " +
+            "'rm -rf /' num terminal é tão destrutivo quanto executar. " +
+            "Linha: \"" + (acumulado + parte).slice(0, 120) + "\""
+        );
+      acumulado = "";
+    }
+  } else {
+    // atalho: valida o formato (e a tecla)
+    const { modificadores, principal } = parseAtalho(opts.key);
+    const atalho = modificadores.concat([principal]).join("+");
+
+    // ---- ATALHOS DESTRUTIVOS ----
+    if (ATALHOS_BLOQUEADOS[atalho])
+      throw new Error(
+        "Atalho BLOQUEADO (" + atalho + "): " + ATALHOS_BLOQUEADOS[atalho] +
+          ". Use uma ação menos destrutiva."
+      );
+
+    // ---- COLAR (ctrl+v) ----
+    // O conteudo colado nao passa pelo buffer nem pela trava: e o bypass
+    // classico (a IA monta "rm -rf /" num arquivo, copia e cola). A IA tem
+    // que DIGITAR o texto — e o texto digitado passa pela trava.
+    if (principal === "v" && modificadores.includes("ctrl"))
+      throw new Error(
+        "Colar (ctrl+v) é BLOQUEADO: o conteúdo colado não passa pela trava " +
+          "anticatástrofe. Use keyboard_type para digitar o texto."
+      );
+
+    // ---- ENTER (com ou sem modificador) e TAB ----
+    // A linha acumulada e o que o Enter vai executar. Qualquer enter conta
+    // (shift+enter tambem executa em varios terminais). O TAB completa o
+    // comando: a linha tambem precisa estar limpa antes de completar.
+    const completaPrompt = principal === "enter" || principal === "tab";
+    if (completaPrompt) {
+      const linha = linhaAtual();
+      const perigo = validarLinhaDigitada(linha);
+      if (perigo)
+        throw new Error(
+          (principal === "enter" ? "Enter" : "TAB") +
+            " BLOQUEADO pela trava anticatástrofe: a linha digitada é " +
+            "catastrófica (" + perigo + "). Linha: \"" + linha.slice(0, 120) + "\". " +
+            "A tecla que a executaria foi recusada."
+        );
+    }
+  }
+
+  // ---- MODO SUPERVISIONADO: o usuario aprova CADA digitacao ----
+  // A mensagem de "teclado desligado" promete s/N no supervisionado — aqui
+  // a promessa e cumprida de verdade (o run_command tambem pede).
+  if (cfg.run && !cfg.auto) {
+    const descricao =
+      op === "type"
+        ? "digitar " + JSON.stringify(String(opts.text || "").slice(0, 120))
+        : "pressionar " + String(opts.key || "");
+    console.log("");
+    console.log("╔═══════════════════════════════════════════════════════╗");
+    console.log("║  PEDIDO DE TECLADO — MODO SUPERVISIONADO              ║");
+    console.log("╚═══════════════════════════════════════════════════════╝");
+    console.log("  Ação: " + descricao);
+    const resposta = await askYesNo(60);
+    if (!["s", "sim", "y", "yes"].includes(resposta)) {
+      audit({ action: "keyboard_" + op, resumo: "REJEITADO: " + descricao });
+      throw new Error(
+        "Você rejeitou a digitação no terminal (resposta: " + (resposta || "vazia") + ")"
+      );
+    }
+  }
+
+  let r;
+  if (op === "type") {
+    const texto = String(opts.text == null ? "" : opts.text);
+    if (plataforma === "linux") r = await tecladoLinuxType(texto);
+    else if (plataforma === "win32") r = await tecladoWindowsType(texto);
+    else if (plataforma === "android" || process.env.TERMUX_VERSION) r = await tecladoTermuxType(texto);
+    else throw new Error("Teclado não suportado nesta plataforma: " + plataforma);
+  } else {
+    const atalho = String(opts.key == null ? "" : opts.key);
+    if (plataforma === "linux") r = await tecladoLinuxKey(atalho);
+    else if (plataforma === "win32") r = await tecladoWindowsKey(atalho);
+    else if (plataforma === "android" || process.env.TERMUX_VERSION) r = await tecladoTermuxKey(atalho);
+    else throw new Error("Teclado não suportado nesta plataforma: " + plataforma);
+  }
+
+  if (!r.ok) {
+    throw new Error(
+      "Não consegui " + (op === "type" ? "digitar" : "disparar o atalho") + ". Tentativas: " +
+        (r.erros || []).join(" | ") +
+        " — no Linux instale: ydotool (Wayland) ou xdotool (X11); no Windows não é preciso nada; no Termux use o pacote termux-api"
+    );
+  }
+  // auditoria: o que foi digitado fica no log (como o run_command)
+  audit({
+    action: "keyboard_" + op,
+    resumo: op === "type" ? String(opts.text || "").slice(0, 200) : String(opts.key || ""),
+    ferramenta: r.ferramenta || null,
+  });
+
+  // buffer de linha: o que foi digitado alimenta a trava do próximo Enter
+  if (op === "type") {
+    bufferAcumula(String(opts.text == null ? "" : opts.text));
+  } else {
+    const { modificadores, principal } = parseAtalho(opts.key);
+    // Enter (sem modificador) executa a linha: a trava já validou antes.
+    // Enter COM modificador (shift+enter) tambem executa em varios terminais
+    // — por isso ele tambem limpa a linha depois de validado.
+    if (principal === "enter") bufferLimpa();
+    // backspace remove o ultimo caractere; delete (avanco) NAO mexe no
+    // buffer — apagar para frente nao muda o que ja foi digitado
+    else if (principal === "backspace") bufferLinha = bufferLinha.slice(0, -1);
+  }
+
+  const resp = Object.assign({ acao: op, plataforma: plataforma }, r);
+  if (!resp.aviso) {
+    const aviso = avisoSessao(r.ferramenta);
+    if (aviso) resp.aviso = aviso;
+  }
+  resp.linhaAtual = linhaAtual().slice(0, 200);
+  return resp;
+}
+
 // ---------------------------------------------------------------- ações (whitelist fixa)
 const ACTIONS = {
   ping: async () => {
@@ -3313,6 +4021,13 @@ const ACTIONS = {
       throw new Error('Falta o caminho: use {"x":100,"y":100,"x2":800,"y2":600}');
     return executarMouse("drag", args);
   },
+  keyboard_type: async (args) => {
+    return executarTeclado("type", args);
+  },
+  keyboard_key: async (args) => {
+    if (!args.key) throw new Error('Falta a tecla: use {"key":"enter"} ou {"key":"ctrl+c"}');
+    return executarTeclado("key", args);
+  },
 };
 
 // ---------------------------------------------------------------- relatório da tarefa (v1.8.0)
@@ -3439,6 +4154,8 @@ function rotuloAcao(a) {
     mouse_click: "cliques do mouse",
     mouse_scroll: "rolagens do mouse",
     mouse_drag: "arrastos do mouse",
+    keyboard_type: "digitação de texto",
+    keyboard_key: "atalhos de teclado",
     window_screenshot: "capturas de janela",
   };
   return rotulos[a] || 'ações "' + a + '"';
@@ -3533,6 +4250,9 @@ function montarRelatorioTexto(l, fim, resumo, automatico) {
 }
 
 function fecharTarefa(resumo, automatico) {
+  // v1.16.0: o buffer de linha do teclado NAO pode vazar de uma tarefa para
+  // a outra — o texto digitado antes pertence ao prompt antigo.
+  bufferLimpa();
   if (!lote || lote.comandos.length === 0) {
     lote = null;
     return { abriuRelatorio: false, comandos: 0, motivo: "sem comandos de trabalho nesta tarefa" };
