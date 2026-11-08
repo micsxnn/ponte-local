@@ -652,7 +652,7 @@ aceita ambos os estilos conforme o SO dele.
 | `mouse_scroll` | `{"amount":3,"direction":"down"}` | Rola. `direction`: `up`, `down`, `left`, `right`; `amount`: notches (padrão 3) |
 | `mouse_drag` | `{"x":100,"y":100,"x2":800,"y2":600}` | Arrasta de (x, y) até (x2, y2) com o botão pressionado |
 | `keyboard_type` | `{"text":"ola mundo"}` | Digita texto no teclado do usuário. O texto passa pela MESMA trava anticatástrofe do `run_command`. TAB dentro do texto é recusado |
-| `keyboard_key` | `{"key":"enter"}` | Dispara tecla ou atalho (`enter`, `tab`, `backspace`, `ctrl+c`...). Colar (ctrl+v) e atalhos destrutivos são bloqueados |
+| `keyboard_key` | `{"key":"enter"}` | Dispara tecla ou atalho (`enter`, `backspace`, `ctrl+c`...). Colar (`ctrl+v`, `shift+insert`), TAB e atalhos destrutivos são bloqueados |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (abaixo) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | modo deus: liga (APENAS após o usuário aceitar NO CHAT — a IA pergunta, zero prompt no terminal) / desliga (direto) / registra recusa — seção própria abaixo |
 | `skill_update` | `{}` | Força a atualização do PACOTE INTEIRO da skill (spec, variante da máquina, manual e recursos novos — via o manifesto do repo); devolve `atualizou`, `de`, `para`, `versaoLocal`, `arquivos` e `removidos` (o agente atualiza sozinho no boot e a cada 60 s) |

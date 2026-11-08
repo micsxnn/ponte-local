@@ -17,7 +17,7 @@ description: >-
   hospedar nada.
 ---
 
-<!-- skill-version: 4.4.0 -->
+<!-- skill-version: 4.5.0 -->
 
 # Ponte Local — operação remota do PC do usuário
 
@@ -160,7 +160,15 @@ aceite novo limpa a recusa). Desligar é livre, sem pergunta:
 `run_command` de uma ponte instalada sem `--auto`/`--allow-run` — a decisão
 sempre é dele, o terminal é que não precisa de flag.
 
-**Lei 4 — A trava anticatástrofe é intransponível ONDE ELA RODA.** Ela roda no
+**Lei 4 — A trava anticatástrofe é intransponível ONDE ELA RODA.** Ela
+cobre **ação perigosa**, não só texto perigoso: `rm`/`mv` com glob, `mv` de
+alvo de sistema, `sudo` com flags (`-n`, `-i`, `-u`), `bash -lc '...'`,
+`eval`, `python -c`/`perl -e`/`node -e`, `source ./x.sh`, alias, `!!`,
+leitura de `/etc/shadow` ou de `~/.ssh`/`~/.aws`/`~/.npmrc`, `cmd /c rd /s`,
+aliases do PowerShell (`rm`, `rd`, `del`, `erase`), `$env:windir`, `reg
+delete`, `net user`, `takeown`, `icacls`, `bcdedit`. Se a ação **parece**
+destrutiva e a trava não pegou, **confirme com o usuário** em vez de
+executar. Ela roda no
 modo autônomo e no modo deus — nesses dois, nem modo deus contorna, nem
 aprovação. Em modo SUPERVISIONADO a trava NÃO roda: a proteção lá é o usuário,
 que aprova cada comando com `s`. Bloqueados na trava: fork bomb, expansão de
@@ -544,8 +552,12 @@ agente mantém um **buffer da linha do prompt**: o que a IA digita vai
 acumulando e a trava olha a linha inteira. Se a linha virar destrutiva, a
 digitação é recusada na hora.
 
-ATENÇÃO: **COLAR É BLOQUEADO** (`ctrl+v`): o conteúdo colado não passaria pela
-trava. A IA tem que **digitar** o texto, nunca colar.
+ATENÇÃO: **COLAR É BLOQUEADO** (`ctrl+v`, `shift+insert`, `ctrl+insert`):
+o conteúdo colado não passaria pela trava. A IA tem que **digitar** o texto,
+nunca colar.
+
+ATENÇÃO: **TAB É BLOQUEADO**: no shell ele *completa* o comando, e a trava
+nunca veria o resultado da completion. A IA digita o caminho inteiro.
 
 ATENÇÃO: **ATALHOS DESTRUTIVOS SÃO BLOQUEADOS**: `alt+f4` (fecha a janela e
 perde trabalho não salvo), `ctrl+alt+delete`, `ctrl+shift+delete`,
@@ -811,7 +823,7 @@ ambos os estilos conforme o SO dele.
 | `mouse_scroll` | `{"amount":3,"direction":"down"}` | Rola. `direction`: `up`, `down`, `left`, `right`; `amount`: notches (padrão 3) |
 | `mouse_drag` | `{"x":100,"y":100,"x2":800,"y2":600}` | Arrasta de (x, y) até (x2, y2) com o botão pressionado |
 | `keyboard_type` | `{"text":"ola mundo"}` | Digita texto no teclado do usuário (base64 não, é texto puro). O texto passa pela MESMA trava anticatástrofe do `run_command`: digitar `rm -rf /` num terminal é tão destrutivo quanto executar, e é recusado. TAB dentro do texto é recusado (no shell ele completa o comando e a trava não veria o resultado) |
-| `keyboard_key` | `{"key":"enter"}` | Dispara uma tecla ou atalho: `enter`, `tab`, `backspace`, `delete`, `escape`, `space`, `up`/`down`/`left`/`right`, `home`/`end`, `pageup`/`pagedown`, `f1`..`f12`, e combinações como `ctrl+c`, `ctrl+v`, `ctrl+shift+t`, `alt+f4`. **Colar (ctrl+v) e atalhos destrutivos são bloqueados** |
+| `keyboard_key` | `{"key":"enter"}` | Dispara uma tecla ou atalho: `enter`, `backspace`, `delete`, `escape`, `space`, `up`/`down`/`left`/`right`, `home`/`end`, `pageup`/`pagedown`, `f1`..`f12`, e combinações como `ctrl+c`, `ctrl+shift+t`. **Colar (`ctrl+v`, `shift+insert`), TAB e atalhos destrutivos são bloqueados** |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (§ 4.4) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | Protocolo da Lei 3 |
 | `skill_update` | `{}` | Força a atualização do PACOTE INTEIRO da skill (spec principal, variante da máquina, manual do usuário e recursos novos — via o manifesto do repo). Roda sozinho no boot e a cada 60 s |

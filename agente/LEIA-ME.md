@@ -188,7 +188,7 @@ No Windows Terminal o problema não existe (não há QuickEdit).
 | `mouse_scroll`   | Rola a página para cima, baixo, esquerda ou direita |
 | `mouse_drag`     | Arrasta de uma posição até outra |
 | `keyboard_type`  | Digita texto no seu teclado (o texto passa pela trava anticatástrofe) |
-| `keyboard_key`   | Dispara uma tecla ou atalho (enter, tab, backspace, ctrl+c...) |
+| `keyboard_key`   | Dispara uma tecla ou atalho (enter, backspace, ctrl+c...). Colar e TAB são bloqueados |
 | `screenshot`     | Tira print da tela inteira e devolve a imagem em base64 (`format:"jpg"` deixa bem menor) |
 | `screenshot_window` | Tira print de UMA janela (a que está em foco, ou a que casar com `window_title`/`window_class`/`window_id`) |
 | `run_command`    | Executa um comando de shell. Depende do modo (veja abaixo): **supervisionado** pede `s/N` no terminal; **autônomo** executa direto, exceto padrões catastróficos |
