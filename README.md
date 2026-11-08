@@ -16,7 +16,7 @@ npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
 [![npm](https://img.shields.io/npm/v/ponte-local?label=npm&color=cb3837)](https://www.npmjs.com/package/ponte-local)
-[![Agente](https://img.shields.io/badge/agente-v1.16.0-3fb950)](agente/agent.js)
+[![Agente](https://img.shields.io/badge/agente-v1.17.0-3fb950)](agente/agent.js)
 [![Relay](https://img.shields.io/badge/relay-v1.5.2-3fb950)](relay/ponte-store.ts)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-3fb950)](https://nodejs.org)
 [![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows%20%7C%20Termux-f59e0b)](#requisitos)
