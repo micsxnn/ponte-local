@@ -83,8 +83,16 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  // v1.18.0: os args nao eram validados como objeto — uma string chegava
+  // ao agente, que fazia args.path sobre uma string
+  if (body.args !== undefined && (typeof body.args !== "object" || body.args === null || Array.isArray(body.args))) {
+    return Response.json(
+      { ok: false, error: 'args deve ser um objeto (ex.: {"path":"/home/u"}), ou omitido' },
+      { status: 400 }
+    );
+  }
   try {
-    const cmd = addCommand(body.action, body.args, body.lane);
+    const cmd = addCommand(body.action, body.args ?? {}, body.lane);
     return Response.json({ ok: true, id: cmd.id, lane: cmd.lane });
   } catch (e) {
     // v1.5.1: falha de persistência recusa o comando com 503 (não aceita em

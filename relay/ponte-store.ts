@@ -351,13 +351,21 @@ function loadSnapshot(): Snapshot | null {
 // resultadoParaMemoria (pushResult) mantém pedaços de download íntegros;
 // resultadoParaSnapshot (saveSnapshot) mantém o arquivo de estado enxuto.
 function resultadoParaMemoria(r: PonteResult): PonteResult {
-  if (r.data === undefined || r.data === null) return r;
-  try {
-    if (JSON.stringify(r.data).length <= 10_000_000) return r;
-  } catch {
-    return { ...r, data: undefined };
+  // v1.18.0: o campo `error` nao tinha teto (so o `data` era cortado). Um
+  // agente podia mandar um error de ~12 MB; com 400 resultados na memoria,
+  // isso dava GBs. Agora o error tambem e cortado.
+  const erroLimite = 200_000;
+  let saida = r;
+  if (typeof r.error === "string" && r.error.length > erroLimite) {
+    saida = { ...saida, error: r.error.slice(0, erroLimite) + "…[erro cortado]" };
   }
-  return { ...r, data: { _cortado: "payload grande não armazenado (>10M chars)" } };
+  if (saida.data === undefined || saida.data === null) return saida;
+  try {
+    if (JSON.stringify(saida.data).length <= 10_000_000) return saida;
+  } catch {
+    return { ...saida, data: undefined };
+  }
+  return { ...saida, data: { _cortado: "payload grande não armazenado (>10M chars)" } };
 }
 
 function resultadoParaSnapshot(r: PonteResult): PonteResult {

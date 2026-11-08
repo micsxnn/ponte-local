@@ -88,7 +88,10 @@ export async function POST(req: NextRequest) {
   }
   pushResult({
     id: body.id,
-    ok: !!body.ok,
+    // v1.18.0: !!body.ok tratava a string "false" como true — o
+    // resultado de uma operacao que FALHOU era gravado como ok, e o
+    // operador imprimia "OK".
+    ok: body.ok === true,
     data: body.data,
     error: body.error,
     durationMs: body.durationMs,

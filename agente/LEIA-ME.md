@@ -192,6 +192,8 @@ No Windows Terminal o problema não existe (não há QuickEdit).
 | `screenshot`     | Tira print da tela inteira e devolve a imagem em base64 (`format:"jpg"` deixa bem menor) |
 | `screenshot_window` | Tira print de UMA janela (a que está em foco, ou a que casar com `window_title`/`window_class`/`window_id`) |
 | `run_command`    | Executa um comando de shell. Depende do modo (veja abaixo): **supervisionado** pede `s/N` no terminal; **autônomo** executa direto, exceto padrões catastróficos |
+| `god_mode`       | Liga/desliga o modo deus (a IA pergunta aqui no chat e você aceita). Desligar devolve o agente ao modo anterior |
+| `skill_update`   | Força a atualização do pacote da skill (spec, variante da máquina, manual e recursos novos). O agente já faz isso sozinho, no boot e a cada 60 s |
 | `task_done`      | Fecha a tarefa: o agente grava `relatorio-ponte.txt` com o que foi feito (resumo que a IA envia) e abre na sua tela (a IA manda quando conclui) |
 
 ## Os 3 modos do run_command

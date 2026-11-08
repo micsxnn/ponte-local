@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.17.0 (Windows + Linux + macOS + Termux)
+ * Ponte Local — Agente v1.18.0 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -116,7 +116,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.17.0";
+const VERSION = "1.18.0";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -569,7 +569,14 @@ function loadConfig(cli) {
   c.home = c.home ? path.resolve(String(c.home)) : os.homedir();
   try { fs.chmodSync(CONFIG_FILE, 0o600); } catch (_) {} // config guarda token: só o dono lê (v1.11.0)
   // Modo supervisionado: run_command só funciona se ativado explicitamente.
-  if (cli["allow-run"]) c.run = true;
+  // v1.18.0: --allow-run REBAIXA o autônomo. Antes, quem estava em auto e
+  // digitava --allow-run para voltar a ser supervisionado CONTINUAVA
+  // autônomo (o auto:true persistia) — o usuário achava que tinha voltado
+  // ao prompt s/N e continuava com execucao automatica.
+  if (cli["allow-run"]) {
+    c.run = true;
+    c.auto = false;
+  }
   // Modo autônomo (--auto): run_command SEM confirmação (implica --allow-run).
   // A escalada de permissão é sempre FÍSICA — digitada por você no terminal.
   if (cli.auto) {
@@ -694,14 +701,40 @@ const LOG_PREFIXO_PROTEGIDO = path.join(path.dirname(path.resolve(LOG_FILE)), "p
 // protegidos saíam de __dirname — via npx isso aponta para o cache
 // efêmero e a proteção não cobria nada.
 const DATA_DIR_RESOLVIDO = path.resolve(DATA_DIR);
+// caminho REAL da pasta de dados (o symlink aponta para outro lugar)
+const DATA_DIR_REAL = (() => {
+  try {
+    return fs.realpathSync(DATA_DIR_RESOLVIDO);
+  } catch (_) {
+    return DATA_DIR_RESOLVIDO;
+  }
+})();
 function caminhoProtegido(rp) {
   const r = path.resolve(rp);
-  return (
+  if (
     CAMINHOS_PROTEGIDOS.has(r) ||
     String(r).startsWith(LOG_PREFIXO_PROTEGIDO) ||
     r === DATA_DIR_RESOLVIDO ||
     r.startsWith(DATA_DIR_RESOLVIDO + path.sep)
-  );
+  )
+    return true;
+  // v1.18.0: a comparacao era LEXICAL. Se a pasta de dados fosse um
+  // symlink (PONTE_HOME apontando para outro lugar), o caminho REAL nao
+  // casava — e a config com o token ficava legivel remotamente.
+  // Compara tambem pelo caminho real.
+  try {
+    const real = fs.realpathSync(r);
+    if (
+      CAMINHOS_PROTEGIDOS.has(real) ||
+      String(real).startsWith(LOG_PREFIXO_PROTEGIDO) ||
+      real === DATA_DIR_REAL ||
+      real.startsWith(DATA_DIR_REAL + path.sep)
+    )
+      return true;
+  } catch (_) {
+    /* caminho inexistente: a comparacao lexical acima ja valhou */
+  }
+  return false;
 }
 
 function assertAllowed(p) {
@@ -4775,9 +4808,22 @@ function montarRelatorioTexto(l, fim, resumo, automatico) {
     ...blocoFalhas,
     "",
     barra,
-    "Proteções ativas a tarefa inteira: escopo na home, pastas sensíveis",
-    "bloqueadas, exclusão só via lixeira (com desfazer) e trava",
-    "anticatástrofe. Registro técnico completo: ponte-log.jsonl.",
+    // v1.18.0: o relatorio afirmava protecoes que so valem para as ACES
+    // DE ARQUIVO (escopo, pastas sensiveis, lixeira). Com o run_command
+    // ligado, o shell roda fora do escopo e a lixeira nao se aplica — o
+    // texto mentia para o usuario. Agora o relatorio diz o que vale.
+    ...(cfg.run
+      ? [
+          "Comando de shell HABILITADO nesta tarefa: o shell roda no sistema,",
+          "fora do escopo de arquivos e fora da lixeira. A trava anticatastrofe",
+          "ainda barra os comandos catastróficos, mas o resto passa.",
+        ]
+      : [
+          "Proteções ativas a tarefa inteira: escopo na home, pastas sensíveis",
+          "bloqueadas, exclusão só via lixeira (com desfazer) e trava",
+          "anticatástrofe.",
+        ]),
+    "Registro técnico completo: ponte-log.jsonl.",
     "Gerado pelo agente v" + VERSION + ". Quando a próxima tarefa começa,",
     "este relatório é fechado da tela e apagado.",
   ].join("\n");

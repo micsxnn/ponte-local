@@ -12,7 +12,15 @@ timeout /t %INTERVALO% /nobreak >nul
 powershell -NoProfile -Command "if (Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*agent.js*' }) { exit 0 } else { exit 1 }" >nul 2>nul
 if errorlevel 1 (
   rem v1.11.0: sem config, religar em loop so enche a barra de tarefas
-  if not exist "%~dp0ponte.config.json" (
+  rem v1.18.0: a config vive na pasta de DADOS (%DATA_DIR% / %PONTE_HOME%),
+  rem nao na pasta do script — com PONTE_HOME customizado, o watchdog caia
+  rem sempre no ramo "sem config" e NUNCA religava o agente.
+  if "%PONTE_HOME%"=="" (
+    set "DATA_DIR=%USERPROFILE%\ponte-agent"
+  ) else (
+    set "DATA_DIR=%PONTE_HOME%"
+  )
+  if not exist "%DATA_DIR%\ponte.config.json" (
     echo [watchdog] %date% %time% - sem ponte.config.json. Configure primeiro: rode rodar.bat e informe URL e token.
     timeout /t 300 /nobreak >nul
     goto loop

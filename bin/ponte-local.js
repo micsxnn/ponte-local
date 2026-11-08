@@ -824,7 +824,8 @@ async function main() {
       token: String(cli.token || cfg.token || process.env.PONTE_AGENT_TOKEN),
       home: cli.home || cfg.home || os.homedir(),
       run: !!(cli.auto || cli["allow-run"] || cfg.run),
-      auto: !!(cli.auto || cfg.auto),
+      // v1.18.0: --allow-run rebaixa o autônomo (mesma regra do agent.js)
+      auto: cli["allow-run"] && !cli.auto ? false : !!(cli.auto || cfg.auto),
       godMode: !!cfg.godMode,
       godModeDeclined: !!cfg.godModeDeclined,
     });
