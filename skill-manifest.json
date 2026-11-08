@@ -1,5 +1,5 @@
 {
-  "versao": "4.4.0",
+  "versao": "4.5.0",
   "descricao": "Pacote de arquivos da skill do Ponte Local. O agente usa este manifesto para manter a skill completa e atualizada na maquina do usuario (inclusive arquivos novos e recursos extras), e o comando 'npx ponte-local update' usa o mesmo manifesto para atualizar a instalacao do usuario.",
   "arquivos": [
     {
