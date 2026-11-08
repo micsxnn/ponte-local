@@ -655,7 +655,7 @@ aceita ambos os estilos conforme o SO dele.
 | `keyboard_key` | `{"key":"enter"}` | Dispara tecla ou atalho (`enter`, `tab`, `backspace`, `ctrl+c`...). Colar (ctrl+v) e atalhos destrutivos são bloqueados |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (abaixo) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | modo deus: liga (APENAS após o usuário aceitar NO CHAT — a IA pergunta, zero prompt no terminal) / desliga (direto) / registra recusa — seção própria abaixo |
-| `skill_update` | `{}` | Força o download da SKILL.md mais recente deste repo; devolve `atualizou`, `de`, `para`, `versaoLocal` (o agente também atualiza sozinho no boot e a cada 60 s) |
+| `skill_update` | `{}` | Força a atualização do PACOTE INTEIRO da skill (spec, variante da máquina, manual e recursos novos — via o manifesto do repo); devolve `atualizou`, `de`, `para`, `versaoLocal`, `arquivos` e `removidos` (o agente atualiza sozinho no boot e a cada 60 s) |
 | `task_done` | `{"resumo":"..."}` | **Fecha a tarefa** — grava `relatorio-ponte.txt` mostrando O QUE FOI FEITO (o seu `resumo` em texto; sem lista de comandos; seção `FALHAS` só se algo errou) e abre no editor do usuário (Windows `start`, Linux `xdg-open`, macOS `open`); ÚLTIMO comando de toda tarefa; devolve `abriuRelatorio`; a tarefa seguinte fecha a janela anterior e apaga o txt |
 
 Resposta de cada comando: `{"id","ok","data"|"error","durationMs","ts"}`.

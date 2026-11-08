@@ -233,14 +233,37 @@ com `undo_last`, e tudo registrado em `ponte-log.jsonl`.
   ou você edita o `ponte.config.json`. Desligado, o `run_command` volta ao
   modo anterior (supervisionado volta a pedir `s/N`).
 
-## A skill se atualiza sozinha
+## A skill se atualiza sozinha (e é um pacote inteiro)
 
-O agente baixa a `SKILL.md` mais recente do repo no boot e a cada 60 s e
-salva aqui na pasta dele (`SKILL.md`, junto com o `agent.js`). É a versão
-vigente das instruções para qualquer IA que opera a ponte — nada de copiar
-à mão. Para forçar na hora, a IA manda `{"action":"skill_update","args":{}}`
-e recebe de volta a versão antiga e a nova. O `ping` também mostra a versão
-da skill e se o modo deus está ativo.
+A skill é um **pacote** de arquivos, não um `.md` solto: a spec principal, a
+variante "dentro da máquina", o manual e os recursos novos. O repo publica
+um manifesto que lista tudo — e o agente baixa o pacote inteiro sozinho (no
+boot e a cada 60 s).
+
+Quando muda, você vê no terminal:
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Skill atualizada: v4.3.0 -> v4.4.0          │
+  └──────────────────────────────────────────────┘
+    4 arquivo(s) atualizado(s) (incluindo 2 novo(s))
+    A IA ja usa a versao nova. Nada a fazer.
+```
+
+Para forçar na hora, ou para atualizar também o `agent.js`:
+
+```bash
+npx ponte-local update
+```
+
+Ou peça para a IA mandar `{"action":"skill_update","args":{}}`.
+
+O agente baixa o pacote mais recente do repo no boot e a cada 60 s e salva
+aqui na pasta dele (`SKILL.md`, `SKILL-MAQUINA.md`, `LEIA-ME.md` e a pasta
+`skill/` com os recursos). É a versão vigente das instruções para qualquer IA
+que opera a ponte — nada de copiar à mão. Para forçar na hora, a IA manda
+`{"action":"skill_update","args":{}}` e recebe de volta a versão antiga, a
+nova e a lista de arquivos. O `ping` também mostra a versão do pacote.
 
 ## Relatório da tarefa (a IA fecha com `task_done`)
 
@@ -267,7 +290,14 @@ Sem ambiente gráfico (SSH, servidor), ele só salva o arquivo e avisa no termin
 
 ## Atualizar o agente à mão (comandos exatos)
 
-A skill se atualiza sozinha; o `agent.js` não. Para trocar a versão dele:
+**O jeito mais fácil é `npx ponte-local update`** — baixa o `agent.js` novo E o
+pacote inteiro da skill e aplica nos dois:
+
+```bash
+npx ponte-local update
+```
+
+O `agent.js` também dá para trocar na mão:
 
 - **Linux:** `cd ~/ponte-agent && bash atualizar.sh` — ou direto:
   `curl -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js`

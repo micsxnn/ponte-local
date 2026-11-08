@@ -428,10 +428,49 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 | **Mouse** | `mouse_position` (onde está o cursor) · `mouse_move` · `mouse_click` · `mouse_scroll` · `mouse_drag` |
 | **Teclado** | `keyboard_type` (digita texto) · `keyboard_key` (atalhos: enter, tab, backspace, ctrl+c, ctrl+v...) |
 | **Comando** | `run_command` (com os modos acima) |
-| **Controle** | `god_mode` (liga/desliga as confirmações; a IA só ativa após o seu aceite no chat) · `skill_update` (força o download da SKILL.md; o agente também atualiza sozinho no boot e a cada 60 s) · `task_done` (fecha a tarefa: o agente grava o relatório TXT e abre na tela do usuário) |
+| **Controle** | `god_mode` (liga/desliga as confirmações; a IA só ativa após o seu aceite no chat) · `skill_update` (força a atualização do **pacote inteiro** da skill) · `task_done` (fecha a tarefa: o agente grava o relatório TXT e abre na tela do usuário) |
 
 A referência completa, com argumentos exatos, está na
 [tabela de ações da SKILL.md](SKILL.md#42-as-ações).
+
+### A skill se atualiza sozinha — e é um pacote inteiro
+
+A skill não é um `.md` solto: é um **pacote** (a spec principal, a variante
+"dentro da máquina", o manual do usuário e os recursos novos). O repo publica
+um **manifesto** (`skill-manifest.json`) que diz exatamente o que deve estar
+na sua máquina.
+
+| Quem atualiza | Como | Quando |
+|---|---|---|
+| **O agente** | baixa o pacote inteiro sozinho | no boot e a cada 60 s |
+| **Você** | `npx ponte-local update` | quando quiser |
+
+```bash
+npx ponte-local update
+```
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Atualizacao concluida                       │
+  └──────────────────────────────────────────────┘
+
+  Skill: v4.3.0 -> v4.4.0  (4 arquivo(s))
+    arquivos novos da skill:
+      + SKILL-MAQUINA.md
+      + skill/guias/atalhos.md
+
+  Agente: v1.16.0 -> v1.17.0
+
+  Se o agente estava rodando, reinicie para ele usar a versao nova.
+```
+
+Arquivo **novo** da skill chega sem precisar mudar código: o manifesto é a
+fonte da verdade e o agente baixa tudo de uma vez (tudo ou nada — se um
+arquivo falhar, a skill antiga fica inteira no lugar). O que **sai** da skill
+nova é removido da sua máquina.
+
+O `update` também funciona sem npm: ele baixa do repo direto e aplica em
+`~/ponte-agent/`.
 
 ## Estrutura do repositório
 
@@ -465,7 +504,8 @@ ponte-local/
 
 | Componente | Versão | O que trouxe |
 |------------|--------|--------------|
-| Agente | **v1.16.0** (atual) | `keyboard_type` (digita texto) e `keyboard_key` (dispara atalhos): a IA mexe no teclado do usuário (Windows/Linux/macOS/Termux, zero dependência npm). O texto digitado passa pela mesma trava anticatástrofe do `run_command`; colar (ctrl+v) e atalhos destrutivos são bloqueados |
+| Agente | **v1.17.0** (atual) | Skill como **pacote inteiro**: um manifesto no repo lista tudo o que deve estar na máquina (spec, variante da máquina, manual e recursos novos). O agente baixa o pacote inteiro sozinho, no boot e a cada 60 s; `npx ponte-local update` faz o mesmo lado do usuário e também traz o `agent.js` novo. Arquivo novo da skill chega sem mudar código; o que sai da skill nova é removido |
+| Agente | v1.16.0 | `keyboard_type` (digita texto) e `keyboard_key` (dispara atalhos): a IA mexe no teclado do usuário (Windows/Linux/macOS/Termux, zero dependência npm). O texto digitado passa pela mesma trava anticatástrofe do `run_command`; colar (ctrl+v) e atalhos destrutivos são bloqueados |
 | Agente | v1.14.0 | `mouse_position`, `mouse_move`, `mouse_click`, `mouse_scroll` e `mouse_drag`: a IA mexe no cursor do usuário (Windows/Linux/macOS/Termux, zero dependência npm). No X11 usa `xdotool`; no Wayland, `ydotool`/`dotool` (o `xdotool` mexe só no cursor do XWayland — a resposta avisa) |
 | Agente | v1.13.0 | `screenshot` e `screenshot_window`: print da tela e de uma janela (Linux/Windows/macOS/Termux, zero dependência npm — usa o que a distro já tem); no Wayland a janela em foco é capturada e a resposta avisa |
 | Agente | v1.12.0 | Continuidade das correções de segurança da v1.11.0 |

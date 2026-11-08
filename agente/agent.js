@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.16.0 (Windows + Linux + macOS + Termux)
+ * Ponte Local — Agente v1.17.0 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -86,6 +86,15 @@
  *    dangerCheck do run_command (digitar "rm -rf /" num terminal é tão
  *    destrutivo quanto executar) e a ação exige o modo habilitado — a
  *    escalada continua física, digitada pelo usuário.
+ *  - Skill como PACOTE (v1.17.0): a skill deixou de ser um .md solto e
+ *    virou um pacote de arquivos (spec principal, variante "dentro da maquina",
+ *    manual do usuario e recursos novos). O repo publica um manifesto
+ *    (skill-manifest.json) que lista tudo; o agente baixa o pacote INTEIRO
+ *    sozinho (boot + a cada 60 s) e remove o que saiu da skill nova. Um
+ *    arquivo NOVO da skill chega sem precisar mudar codigo. O usuario
+ *    tambem pode forcar: npx ponte-local update (baixa o agente novo + o
+ *    pacote da skill). O usuario e o agente sao avisados, de forma simples,
+ *    sempre que a skill muda.
  *  - Segurança v1.11.0 (audit com subagentes + skills security-review/
  *    security-and-hardening): trava anticatástrofe cobre && no meio do
  *    comando, flags com hífen interno (--no-preserve-root), find -delete,
@@ -107,7 +116,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.16.0";
+const VERSION = "1.17.0";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -1784,6 +1793,22 @@ async function atualizarSkill(origem) {
         (r.removidos.length ? ", " + r.removidos.length + " removido(s)" : "") +
         ")",
     });
+    // ---- AVISO SIMPLES PARA O USUÁRIO (no terminal dele) ----
+    // A skill mudou: o usuário precisa saber, sem entender de manifesto.
+    const novos = r.arquivos.filter((a) => a !== "SKILL.md");
+    console.log("");
+    console.log("  ┌──────────────────────────────────────────────┐");
+    console.log("  │  Skill atualizada: v" + String(antes || "nova") + " -> v" + r.para + "        │");
+    console.log("  └──────────────────────────────────────────────┘");
+    console.log(
+      "    " +
+        r.arquivos.length +
+        " arquivo(s) atualizado(s)" +
+        (novos.length ? " (incluindo " + novos.length + " novo(s))" : "") +
+        (r.removidos.length ? ", " + r.removidos.length + " removido(s)" : "")
+    );
+    console.log("    A IA ja usa a versao nova. Nada a fazer.");
+    console.log("");
   } catch (e) {
     r.erro = e.message;
   }

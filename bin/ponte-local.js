@@ -88,6 +88,15 @@ const SELO_USUARIO = (cor) => `
   O agente conversa com a sua IA pelo relay.
 `;
 
+const SELO_UPDATE = () => `
+╔═══════════════════════════════════════════════════════╗
+║  MODO ATUALIZAÇÃO — o seu PC físico                  ║
+╚═══════════════════════════════════════════════════════╝
+  Este comando baixa a versão nova do agente e o PACOTE
+  INTEIRO da skill (inclusive arquivos novos) e aplica
+  em ~/ponte-agent. Ele NÃO sobe o agente — só atualiza.
+`;
+
 const SELO_AGENTE = (cor) => `
 ╔═══════════════════════════════════════════════════════╗
 ║  MODO AGENTE (REMOTO) — VM / servidor da IA          ║
@@ -545,7 +554,7 @@ function manifestoInstalado() {
 }
 
 async function cmdUpdate(args) {
-  console.log(SELO_USUARIO());
+  console.log(SELO_UPDATE());
   console.log("  Atualizando o agente e a skill...");
   console.log("");
 
@@ -675,16 +684,27 @@ async function cmdUpdate(args) {
     return resultado;
   }
   if (resultado.atualizou) {
-    console.log("  Atualizacao concluida.");
+    // ---- AVISO SIMPLES PARA O USUÁRIO ----
+    console.log("  ┌──────────────────────────────────────────────┐");
+    console.log("  │  Atualizacao concluida                       │");
+    console.log("  └──────────────────────────────────────────────┘");
     console.log("");
-    if (resultado.skill.arquivos.length) {
-      console.log("  Skill v" + resultado.skill.de + " -> v" + resultado.skill.para + ":");
-      for (const a of resultado.skill.arquivos) console.log("    + " + a);
+    console.log(
+      "  Skill: v" + resultado.skill.de + " -> v" + resultado.skill.para +
+      "  (" + resultado.skill.arquivos.length + " arquivo(s))"
+    );
+    const novos = resultado.skill.arquivos.filter((a) => a !== "SKILL.md");
+    if (novos.length) {
+      console.log("    arquivos novos da skill:");
+      for (const a of novos) console.log("      + " + a);
     }
-    for (const rm of resultado.skill.removidos) console.log("    - " + rm + " (saiu da skill nova)");
+    if (resultado.skill.removidos.length) {
+      console.log("    arquivos que sairam da skill:");
+      for (const rm of resultado.skill.removidos) console.log("      - " + rm);
+    }
     if (resultado.agente.atualizou) {
       console.log("");
-      console.log("  Agente v" + resultado.agente.de + " -> v" + resultado.agente.para);
+      console.log("  Agente: v" + resultado.agente.de + " -> v" + resultado.agente.para);
     }
     console.log("");
     console.log("  Se o agente estava rodando, reinicie para ele usar a versao nova.");

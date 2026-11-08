@@ -17,7 +17,7 @@ description: >-
   hospedar nada.
 ---
 
-<!-- skill-version: 4.3.0 -->
+<!-- skill-version: 4.4.0 -->
 
 # Ponte Local — operação remota do PC do usuário
 
@@ -477,6 +477,38 @@ voltar com "Não consegui capturar a tela" (ferramenta ausente), a IA **DEVE**:
 Ofereça caminho sem print: "se preferir não instalar nada, eu sigo sem
 tirar print — funciona igual".
 
+### A skill se atualiza sozinha (pacote inteiro, não só um arquivo)
+
+A skill é um **PACOTE** de arquivos, não um `.md` solto. O repo publica um
+**manifesto** (`skill-manifest.json`) que lista tudo o que deve estar na
+máquina do usuário:
+
+- `SKILL.md` — a spec que você (a IA) lê
+- `agente/SKILL.md` — a variante para a IA dentro da máquina
+- `agente/LEIA-ME.md` — o manual do usuário
+- `skill/**` — qualquer recurso novo que o repo adicione
+
+**Quem atualiza:**
+- **O agente** (na máquina do usuário) baixa o pacote inteiro sozinho, no boot
+  e a cada 60 s. Arquivo **novo** da skill chega sem precisar mudar código:
+  o manifesto é a fonte da verdade.
+- **O usuário** pode forçar a qualquer momento: `npx ponte-local update`
+  (baixa o agente novo + o pacote inteiro da skill, inclusive arquivos novos).
+
+**Quando o pacote muda, o que o usuário vê** (no terminal dele, sem entender
+de manifesto):
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Skill atualizada: v4.3.0 -> v4.4.0          │
+  └──────────────────────────────────────────────┘
+    4 arquivo(s) atualizado(s) (incluindo 2 novo(s))
+    A IA ja usa a versao nova. Nada a fazer.
+```
+
+**Quando o usuário dispara `skill_update` pela IA**, a resposta traz a
+versão antiga, a nova e a lista de arquivos que entraram/saíram.
+
 ### Digitar no teclado — o agente PRECISA ENSINAR o usuário a instalar
 
 As ações `keyboard_type` e `keyboard_key` **não funcionam sozinhas**: elas
@@ -782,7 +814,7 @@ ambos os estilos conforme o SO dele.
 | `keyboard_key` | `{"key":"enter"}` | Dispara uma tecla ou atalho: `enter`, `tab`, `backspace`, `delete`, `escape`, `space`, `up`/`down`/`left`/`right`, `home`/`end`, `pageup`/`pagedown`, `f1`..`f12`, e combinações como `ctrl+c`, `ctrl+v`, `ctrl+shift+t`, `alt+f4`. **Colar (ctrl+v) e atalhos destrutivos são bloqueados** |
 | `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (§ 4.4) |
 | `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | Protocolo da Lei 3 |
-| `skill_update` | `{}` | Força o download da SKILL.md deste repo (também roda sozinho no boot e a cada 60 s) |
+| `skill_update` | `{}` | Força a atualização do PACOTE INTEIRO da skill (spec principal, variante da máquina, manual do usuário e recursos novos — via o manifesto do repo). Roda sozinho no boot e a cada 60 s |
 | `task_done` | `{"resumo":"..."}` | **Fecha a tarefa** (Lei 1) — ÚLTIMO comando de toda tarefa |
 
 `search`, `tree`, `disk_usage` e `duplicates` **pulam por desenho** as pastas
@@ -919,6 +951,7 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
 | `mouse_*` | coordenadas inteiras de -100.000 a 100.000; `count` de 1 a 10; `amount` de scroll de -1.000 a 1.000 |
 | `keyboard_type` | texto de até 4.000 caracteres; sem TAB; cada linha validada contra a trava |
 | `keyboard_key` | uma tecla ou combinação (`ctrl+shift+t`); colar e atalhos destrutivos bloqueados |
+| pacote da skill | manifesto `skill-manifest.json`; o agente baixa o pacote INTEIRO (tudo ou nada) e remove o que saiu da skill nova |
 | `resumo` do `task_done` | 4.000 caracteres |
 | Fila de comandos pendentes | 100 por lane |
 | Histórico de comandos / resultados | 2.000 / 400 |
