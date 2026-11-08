@@ -136,6 +136,9 @@ else console.log(maj+'.'+min+'.'+(pat+1));
 ")"
 TAG="v$VER_REPO_NOV"
 
+# versao da SKILL (marcador skill-version no SKILL.md) — o manifesto usa ela
+VER_SKILL_NOV="$(grep -m1 -oE 'skill-version:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' SKILL.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo '0.0.0')"
+
 info "agente: $VER_AGENTE_ANT -> $VER_AGENTE_NOV"
 info "repo:   $VER_REPO_ANT -> $TAG"
 
@@ -164,6 +167,11 @@ p.version='$VER_AGENTE_NOV';
 fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');
 "
 ok "package.json -> $VER_AGENTE_NOV"
+
+# manifesto da skill: a fonte da verdade do PACOTE (inclui arquivos novos
+# da pasta skill/ automaticamente)
+node scripts/gerar-manifesto.js "$VER_SKILL_NOV"
+ok "skill-manifest.json -> v$VER_SKILL_NOV"
 
 # agente/agent.js: a constante VERSION
 node -e "
