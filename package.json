@@ -36,7 +36,8 @@
     "LICENSE",
     "NOTICE.md",
     "SECURITY.md",
-    "SKILL.md"
+    "SKILL.md",
+    "skill-manifest.json"
   ],
   "scripts": {
     "test": "node agente/teste-trava.cjs",

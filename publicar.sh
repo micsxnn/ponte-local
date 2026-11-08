@@ -145,6 +145,7 @@ if [ "$DRY" = "1" ]; then
   echo ""
   echo "  O que faria:"
   echo "    1. package.json          version -> $VER_AGENTE_NOV"
+  echo "    1b. skill-manifest.json  versao  -> $VER_SKILL_NOV (gerado, com a lista de arquivos)"
   echo "    2. agente/agent.js       VERSION  -> $VER_AGENTE_NOV"
   echo "    3. agente/teste-trava.cjs          -> $VER_AGENTE_NOV"
   echo "    4. node agente/teste-trava.cjs"

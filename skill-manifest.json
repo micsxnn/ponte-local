@@ -1,0 +1,21 @@
+{
+  "versao": "4.3.0",
+  "descricao": "Pacote de arquivos da skill do Ponte Local. O agente usa este manifesto para manter a skill completa e atualizada na maquina do usuario (inclusive arquivos novos e recursos extras), e o comando 'npx ponte-local update' usa o mesmo manifesto para atualizar a instalacao do usuario.",
+  "arquivos": [
+    {
+      "origem": "SKILL.md",
+      "destino": "SKILL.md",
+      "descricao": "Especificacao principal da skill (a que a IA na VM leia)"
+    },
+    {
+      "origem": "agente/SKILL.md",
+      "destino": "SKILL-MAQUINA.md",
+      "descricao": "Variante da skill para a IA que esta dentro da maquina do usuario"
+    },
+    {
+      "origem": "agente/LEIA-ME.md",
+      "destino": "LEIA-ME.md",
+      "descricao": "Manual do agente para o usuario final"
+    }
+  ]
+}

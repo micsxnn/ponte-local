@@ -16,6 +16,14 @@
  *   └──────────────────────────────────────────────────────────────┘
  *
  *   ┌──────────────────────────────────────────────────────────────┐
+ *   │  ATUALIZAÇÃO — em qualquer lado                              │
+ *   │  npx ponte-local update                                     │
+ *   │  Baixa o agente novo e o PACOTE INTEIRO da skill (via o      │
+ *   │  manifesto do repo) e aplica em ~/ponte-agent. Vale para     │
+ *   │  arquivos NOVOS que a skill traga, não só para os mesmos.    │
+ *   └──────────────────────────────────────────────────────────────┘
+ *
+ *   ┌──────────────────────────────────────────────────────────────┐
  *   │  MODO AGENTE (REMOTO) — a VM / o servidor da IA             │
  *   │  npx ponte-local skill        → a especificação da skill    │
  *   │  npx ponte-local acoes [nome] → o manual das ações          │
@@ -451,6 +459,8 @@ OPÇÕES DO MODO USUÁRIO (start)
   --home PATH       escopo de arquivos (padrão: sua home)
 
 OUTROS
+  npx ponte-local update     atualiza o agente E a skill completa (inclusive
+                             arquivos novos da skill) na sua máquina
   npx ponte-local help       esta ajuda
   npx ponte-local version    só a versão
 
@@ -458,6 +468,229 @@ ONDE OS DADOS DO AGENTE FICAM (só no modo start)
   config, log, relatório, skill : ${DATA_DIR}
   (defina PONTE_HOME para mudar)
 `);
+}
+
+// ---------------------------------------------------------------- update
+// Atualização completa do lado do USUÁRIO: baixa o pacote novo da skill
+// (via manifesto) e o agent.js novo, e aplica na pasta de dados
+// (~/ponte-agent). Funciona mesmo sem npm — é o caminho para quem
+// instalou o agente na mão.
+//
+// Fonte: o repo no GitHub (raw.githubusercontent). O relay também serve o
+// agent.js em /api/ponte/download, mas o manifesto vem do repo — por isso
+// a base do repo é a referência dos dois.
+
+const REPO_BASE = "https://raw.githubusercontent.com/micsxnn/ponte-local/main/";
+
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https:") ? require("https") : require("http");
+    const u = new URL(url);
+    const req = lib.request(
+      {
+        hostname: u.hostname,
+        port: u.port || (u.protocol === "https:" ? 443 : 80),
+        path: u.pathname + u.search,
+        method: "GET",
+        timeout: 20000,
+        headers: { "user-agent": "ponte-local/" + pkg().version },
+      },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return resolve(httpsGet(new URL(res.headers.location, url).toString()));
+        }
+        const chunks = [];
+        let size = 0;
+        res.on("data", (c) => {
+          size += c.length;
+          if (size > 8 * 1024 * 1024) {
+            req.destroy();
+            reject(new Error("resposta grande demais"));
+          } else chunks.push(c);
+        });
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode,
+            texto: Buffer.concat(chunks).toString("utf8"),
+          })
+        );
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("tempo esgotado")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function atomicWrite(arquivo, conteudo) {
+  fs.mkdirSync(path.dirname(arquivo), { recursive: true });
+  const tmp = arquivo + ".tmp-" + process.pid;
+  fs.writeFileSync(tmp, conteudo);
+  try {
+    fs.renameSync(tmp, arquivo);
+  } catch (_) {
+    fs.writeFileSync(arquivo, conteudo);
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {}
+  }
+}
+
+function manifestoInstalado() {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "skill-manifest.json"), "utf8"));
+    if (m && Array.isArray(m.arquivos)) return m;
+  } catch (_) {}
+  return null;
+}
+
+async function cmdUpdate(args) {
+  console.log(SELO_USUARIO());
+  console.log("  Atualizando o agente e a skill...");
+  console.log("");
+
+  const resultado = {
+    atualizou: false,
+    skill: { de: null, para: null, arquivos: [], removidos: [] },
+    agente: { de: null, para: null, atualizou: false },
+    erro: null,
+  };
+
+  try {
+    // ---- 1) manifesto ----
+    const mResp = await httpsGet(REPO_BASE + "skill-manifest.json");
+    if (mResp.status !== 200) throw new Error("HTTP " + mResp.status + " ao baixar o manifesto");
+    const manifesto = JSON.parse(mResp.texto);
+    if (!manifesto || !Array.isArray(manifesto.arquivos) || !manifesto.versao)
+      throw new Error("manifesto da skill invalido");
+
+    const instalado = manifestoInstalado();
+    resultado.skill.de = instalado && instalado.versao ? String(instalado.versao) : "nenhuma";
+    resultado.skill.para = String(manifesto.versao);
+
+    // ---- 2) agent.js (o binario que roda) ----
+    const agenteDestino = path.join(DATA_DIR, "agent.js");
+    let versaoAgenteLocal = null;
+    try {
+      const atual = fs.readFileSync(agenteDestino, "utf8");
+      const m = atual.match(/const VERSION = "([\d.]+)"/);
+      if (m) versaoAgenteLocal = m[1];
+    } catch (_) {}
+    resultado.agente.de = versaoAgenteLocal || "nenhuma";
+    const aResp = await httpsGet(REPO_BASE + "agente/agent.js");
+    if (aResp.status !== 200) throw new Error("HTTP " + aResp.status + " ao baixar o agent.js");
+    const mAg = aResp.texto.match(/const VERSION = "([\d.]+)"/);
+    resultado.agente.para = mAg ? mAg[1] : null;
+
+    const versaoSkillLocal = instalado && instalado.versao ? String(instalado.versao) : null;
+    const skillNova = versaoSkillLocal !== String(manifesto.versao);
+    const agenteNovo = resultado.agente.para && resultado.agente.para !== versaoAgenteLocal;
+
+    if (!skillNova && !agenteNovo) {
+      console.log("  Tudo atualizado (skill v" + resultado.skill.para + ", agente v" + (resultado.agente.para || "?") + ").");
+      return resultado;
+    }
+
+    // ---- 3) baixa os arquivos da skill para uma pasta temporaria ----
+    const stage = path.join(DATA_DIR, ".update-stage-" + process.pid);
+    const baixados = [];
+    try {
+      fs.mkdirSync(stage, { recursive: true });
+      for (const item of manifesto.arquivos) {
+        const origem = String(item && item.origem ? item.origem : "");
+        const destino = String(item && item.destino ? item.destino : "");
+        if (!origem || !destino) continue;
+        const destinoAbs = path.resolve(DATA_DIR, destino);
+        if (!destinoAbs.startsWith(path.resolve(DATA_DIR) + path.sep))
+          throw new Error("destino invalido no manifesto: " + destino);
+        const r = await httpsGet(REPO_BASE + origem);
+        if (r.status !== 200) throw new Error("HTTP " + r.status + " ao baixar " + origem);
+        const tmp = path.join(stage, destino);
+        fs.mkdirSync(path.dirname(tmp), { recursive: true });
+        fs.writeFileSync(tmp, r.texto, "utf8");
+        baixados.push({ destino: destino, conteudo: r.texto });
+      }
+    } catch (e) {
+      try {
+        fs.rmSync(stage, { recursive: true, force: true });
+      } catch (_) {}
+      throw e;
+    }
+
+    // ---- 4) aplica a skill ----
+    for (const b of baixados) {
+      const destinoAbs = path.resolve(DATA_DIR, b.destino);
+      atomicWrite(destinoAbs, b.conteudo);
+      resultado.skill.arquivos.push(b.destino);
+    }
+    // remove o que o manifesto novo nao lista mais
+    if (instalado) {
+      const novos = new Set(manifesto.arquivos.map((i) => String(i.destino)));
+      for (const item of instalado.arquivos) {
+        const d = String(item && item.destino ? item.destino : "");
+        if (!d || novos.has(d)) continue;
+        try {
+          const abs = path.resolve(DATA_DIR, d);
+          if (abs.startsWith(path.resolve(DATA_DIR) + path.sep) && fs.existsSync(abs)) {
+            fs.unlinkSync(abs);
+            resultado.skill.removidos.push(d);
+          }
+        } catch (_) {}
+      }
+    }
+    atomicWrite(
+      path.join(DATA_DIR, "skill-manifest.json"),
+      JSON.stringify(
+        { versao: String(manifesto.versao), atualizadoEm: new Date().toISOString(), arquivos: manifesto.arquivos },
+        null,
+        2
+      )
+    );
+
+    // ---- 5) aplica o agent.js (por ultimo: e o programa que roda) ----
+    if (agenteNovo) {
+      atomicWrite(agenteDestino, aResp.texto);
+      try {
+        fs.chmodSync(agenteDestino, 0o755);
+      } catch (_) {}
+      resultado.agente.atualizou = true;
+    }
+
+    try {
+      fs.rmSync(stage, { recursive: true, force: true });
+    } catch (_) {}
+    resultado.atualizou = true;
+  } catch (e) {
+    resultado.erro = e.message;
+  }
+
+  // ---- aviso SIMPLES para o usuario ----
+  console.log("");
+  if (resultado.erro) {
+    console.log("  [x] Nao deu para atualizar: " + resultado.erro);
+    console.log("");
+    console.log("  O que fazer: check a internet e rode de novo. Se continuar assim,");
+    console.log("  baixe manualmente em github.com/micsxnn/ponte-local/releases");
+    console.log("");
+    return resultado;
+  }
+  if (resultado.atualizou) {
+    console.log("  Atualizacao concluida.");
+    console.log("");
+    if (resultado.skill.arquivos.length) {
+      console.log("  Skill v" + resultado.skill.de + " -> v" + resultado.skill.para + ":");
+      for (const a of resultado.skill.arquivos) console.log("    + " + a);
+    }
+    for (const rm of resultado.skill.removidos) console.log("    - " + rm + " (saiu da skill nova)");
+    if (resultado.agente.atualizou) {
+      console.log("");
+      console.log("  Agente v" + resultado.agente.de + " -> v" + resultado.agente.para);
+    }
+    console.log("");
+    console.log("  Se o agente estava rodando, reinicie para ele usar a versao nova.");
+  }
+  console.log("");
+  return resultado;
 }
 
 // ==================================================================
@@ -491,6 +724,12 @@ async function main() {
     const comoJson = rest.includes("--json");
     const alvo = rest.find((a) => !a.startsWith("--"));
     imprimirAcoes(alvo || null, comoJson);
+    return;
+  }
+
+  // --- ATUALIZAÇÃO (lado do usuário) -----------------------------------
+  if (primeiro === "update" || primeiro === "--update" || primeiro === "atualizar") {
+    await cmdUpdate(argv.slice(1));
     return;
   }
 

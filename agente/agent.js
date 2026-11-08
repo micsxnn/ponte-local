@@ -136,9 +136,18 @@ try {
 const CONFIG_FILE = path.join(DATA_DIR, "ponte.config.json");
 const LOG_FILE = path.join(DATA_DIR, "ponte-log.jsonl");
 const RELATORIO_FILE = path.join(DATA_DIR, "relatorio-ponte.txt");
-const SKILL_URL =
-  "https://raw.githubusercontent.com/micsxnn/ponte-local/main/SKILL.md";
+// A skill e um PACOTE de arquivos, nao um .md solto. O manifesto
+// (skill-manifest.json no repo) lista tudo que precisa estar na maquina:
+// a spec principal, a variante "dentro da maquina", o manual do usuario e
+// qualquer recurso novo que o repo adicione. Assim um arquivo NOVO da skill
+// chega no agente sem precisar mudar codigo.
+const SKILL_REPO_BASE =
+  "https://raw.githubusercontent.com/micsxnn/ponte-local/main/";
+const SKILL_URL = SKILL_REPO_BASE + "SKILL.md";
+const SKILL_MANIFEST_URL = SKILL_REPO_BASE + "skill-manifest.json";
 const SKILL_FILE = path.join(DATA_DIR, "SKILL.md");
+const SKILL_MANIFEST_LOCAL = path.join(DATA_DIR, "skill-manifest.json");
+const SKILL_DIR = path.join(DATA_DIR, "skill");
 const SKILL_CHECK_MS = 60 * 1000; // no boot + a cada 60 s
 const SKILL_BACKOFF_MAX_MS = 15 * 60 * 1000; // teto do backoff em falhas seguidas
 
@@ -1604,22 +1613,53 @@ function escreveArquivoAtomico(arquivo, conteudo) {
   }
 }
 
+// ------------------------------------------------- pacote da skill (v1.17.0)
+// A skill nao e mais UM arquivo: e um PACOTE (spec principal, variante
+// "dentro da maquina", manual do usuario e recursos novos). O manifesto no
+// repo (skill-manifest.json) e a fonte da verdade do que deve estar na
+// maquina.
+//
+// Fluxo da atualizacao:
+//   1. GET do manifesto (com ETag: 304 = nada mudou, zero bytes)
+//   2. se a versao do manifesto > versao local: baixa TODOS os arquivos
+//      listados para uma pasta temporaria
+//   3. so substitui o que foi baixado com sucesso (tudo ou nada)
+//   4. remove os arquivos que o manifesto novo nao lista mais (descontinuados)
+//   5. grava o manifesto local (diz o que esta instalado)
+function manifestoLocal() {
+  try {
+    const m = JSON.parse(fs.readFileSync(SKILL_MANIFEST_LOCAL, "utf8"));
+    if (m && Array.isArray(m.arquivos)) return m;
+  } catch (_) {}
+  return null;
+}
+
+// versao do pacote da skill (vem do manifesto; fallback: marcador do SKILL.md)
+function versaoPacoteSkill() {
+  const m = manifestoLocal();
+  if (m && m.versao) return String(m.versao);
+  return versaoSkillLocal();
+}
+
 async function atualizarSkill(origem) {
   const r = {
     atualizou: false,
     notModified: false,
-    de: versaoSkillLocal(),
+    de: versaoPacoteSkill(),
     para: null,
     origem: origem || "auto",
     erro: null,
+    arquivos: [],
+    removidos: [],
   };
   try {
-    // ETag (v1.9.1): só faz sentido mandar If-None-Match se já baixamos uma
-    // resposta com ETag E o arquivo local existe — um 304 contra arquivo
-    // apagado mentiria sobre o estado real
-    const pode304 = !!(skillEtag && fs.existsSync(SKILL_FILE));
+    // ---- 1) manifesto ----
+    // ETag: só faz sentido mandar If-None-Match se já baixamos uma resposta
+    // com ETag E o manifesto local existe — um 304 contra arquivo apagado
+    // mentiria sobre o estado real
+    const pode304 = !!(skillEtag && fs.existsSync(SKILL_MANIFEST_LOCAL));
     const { status, texto, etag } = await httpsGetTexto(
-      SKILL_URL,
+      SKILL_MANIFEST_URL,
       0,
       pode304 ? skillEtag : null
     );
@@ -1634,30 +1674,116 @@ async function atualizarSkill(origem) {
       return r;
     }
     if (etag) skillEtag = etag;
-    const remota = versaoDe(texto);
-    if (!remota) {
-      r.erro = "skill remota sem marcador de versão";
+
+    let manifesto;
+    try {
+      manifesto = JSON.parse(texto);
+    } catch (_) {
+      r.erro = "manifesto da skill invalido (JSON)";
       return r;
     }
-    r.para = remota.join(".");
-    const local = versaoDe(r.de);
-    if (!local || versaoMaisNova(remota, local)) {
-      escreveArquivoAtomico(SKILL_FILE, texto);
-      const antes = r.de;
-      r.de = antes || "nenhuma";
-      r.atualizou = true;
-      audit({
-        action: "skill_update",
-        resumo: antes
-          ? "skill atualizada v" + antes + " → v" + r.para
-          : "skill baixada v" + r.para,
-      });
-      log(
-        antes
-          ? "Skill atualizada: v" + antes + " → v" + r.para
-          : "Skill baixada: v" + r.para
-      );
+    if (!manifesto || !Array.isArray(manifesto.arquivos) || !manifesto.versao) {
+      r.erro = "manifesto da skill sem versao ou sem lista de arquivos";
+      return r;
     }
+    const remota = String(manifesto.versao).split(".").map(Number);
+    const local = String(r.de || "").split(".").map(Number);
+    r.para = String(manifesto.versao);
+
+    const precisa = !local.length || isNaN(local[0]) || versaoMaisNova(remota, local);
+    if (!precisa) {
+      // ja esta na versao nova: nada a fazer (arquivos novos so entram com
+      // uma versao nova — o manifesto E a fonte da verdade)
+      return r;
+    }
+
+    // ---- 2) baixa tudo para uma pasta temporaria (tudo ou nada) ----
+    const stage = path.join(DATA_DIR, ".skill-stage-" + process.pid);
+    const baixados = [];
+    try {
+      fs.mkdirSync(stage, { recursive: true });
+      for (const item of manifesto.arquivos) {
+        const origem = String(item && item.origem ? item.origem : "");
+        const destino = String(item && item.destino ? item.destino : "");
+        if (!origem || !destino) continue;
+        // seguranca: o destino nao pode escapar da pasta de dados
+        const destinoAbs = path.resolve(DATA_DIR, destino);
+        if (!destinoAbs.startsWith(path.resolve(DATA_DIR) + path.sep)) {
+          throw new Error("destino invalido no manifesto: " + destino);
+        }
+        const url = SKILL_REPO_BASE + origem;
+        const resp = await httpsGetTexto(url, 0, null);
+        if (resp.status !== 200) {
+          throw new Error("HTTP " + resp.status + " ao baixar " + origem);
+        }
+        const tmp = path.join(stage, destino);
+        fs.mkdirSync(path.dirname(tmp), { recursive: true });
+        fs.writeFileSync(tmp, resp.texto, "utf8");
+        baixados.push({ origem: origem, destino: destino, conteudo: resp.texto });
+      }
+    } catch (e) {
+      try {
+        fs.rmSync(stage, { recursive: true, force: true });
+      } catch (_) {}
+      r.erro = e.message;
+      return r;
+    }
+
+    // ---- 3) aplica (tudo ou nada) ----
+    const antes = r.de;
+    for (const b of baixados) {
+      const destinoAbs = path.resolve(DATA_DIR, b.destino);
+      fs.mkdirSync(path.dirname(destinoAbs), { recursive: true });
+      escreveArquivoAtomico(destinoAbs, b.conteudo);
+      r.arquivos.push(b.destino);
+    }
+
+    // ---- 4) remove o que o manifesto novo nao lista mais ----
+    const antigo = manifestoLocal();
+    if (antigo && Array.isArray(antigo.arquivos)) {
+      const novos = new Set(manifesto.arquivos.map((i) => String(i.destino)));
+      for (const item of antigo.arquivos) {
+        const d = String(item && item.destino ? item.destino : "");
+        if (!d || novos.has(d)) continue;
+        try {
+          const abs = path.resolve(DATA_DIR, d);
+          if (abs.startsWith(path.resolve(DATA_DIR) + path.sep) && fs.existsSync(abs)) {
+            fs.unlinkSync(abs);
+            r.removidos.push(d);
+          }
+        } catch (_) {}
+      }
+    }
+
+    // ---- 5) grava o manifesto local ----
+    try {
+      fs.rmSync(stage, { recursive: true, force: true });
+    } catch (_) {}
+    escreveArquivoAtomico(
+      SKILL_MANIFEST_LOCAL,
+      JSON.stringify(
+        {
+          versao: String(manifesto.versao),
+          atualizadoEm: stamp(),
+          arquivos: manifesto.arquivos,
+        },
+        null,
+        2
+      )
+    );
+
+    r.de = antes || "nenhuma";
+    r.atualizou = true;
+    audit({
+      action: "skill_update",
+      resumo:
+        (antes ? "skill atualizada v" + antes + " → v" + r.para : "skill baixada v" + r.para) +
+        " (" +
+        r.arquivos.length +
+        " arquivo(s)" +
+        (r.removidos.length ? ", " + r.removidos.length + " removido(s)" : "") +
+        ")",
+    });
   } catch (e) {
     r.erro = e.message;
   }
@@ -3309,7 +3435,7 @@ const ACTIONS = {
       escopo: "somente " + cfg.home + " (pastas sensíveis bloqueadas)",
       modoDeus: !!cfg.godMode,
       godModeDeclined: !!cfg.godModeDeclined,
-      skill: versaoSkillLocal() || "ainda não baixada",
+      skill: versaoPacoteSkill() || "ainda não baixada",
     };
   },
 
@@ -3685,10 +3811,11 @@ const ACTIONS = {
 
   skill_update: async () => {
     const r = await atualizarSkill("comando");
-    r.versaoLocal = versaoSkillLocal();
-    r.arquivo = SKILL_FILE;
+    r.versaoLocal = versaoPacoteSkill();
+    r.pacote = path.join(DATA_DIR, "skill");
     r.rotina =
-      "boot + a cada 60 s (ETag/304; backoff ate 15 min se a rede falhar)";
+      "boot + a cada 60 s (manifesto com ETag/304; baixa o pacote INTEIRO da " +
+      "skill, incluindo arquivos novos; backoff ate 15 min se a rede falhar)";
     return r;
   },
 
