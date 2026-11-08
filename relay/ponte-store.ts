@@ -87,7 +87,9 @@ interface PonteState {
   commands: PonteCommand[]; // histórico (agente usa cursor; pendentes protegidos)
   results: PonteResult[]; // histórico (capado)
   respondidos: number[]; // ids com resultado confirmado — sobrevive à poda dos 400 resultados
-  claimed: Map<number, number>; // id do comando → timestamp do claim (entrega exclusiva)
+  // id do comando → { t: timestamp do claim, lease: duracao do lease }
+  // (v1.18.0: o lease virou por-comando, para caber no timeout do run_command)
+  claimed: Map<number, { t: number; lease: number }>;
   lanePorId: Map<number, LaneId>; // v1.5.1: id do comando → lane dona (sobrevive à poda do histórico)
   lanes: Record<string, LaneState>;
   startedAt: number;
@@ -114,6 +116,27 @@ const MAX_PENDING = 100; // por lane
 const MAX_COMMANDS = 2000;
 const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000; // pendente com mais de 24h morre
 const CLAIM_LEASE_MS = 120_000; // se o agente não responder em 2 min, libera de novo
+// v1.18.0: o lease fixo de 2 min era MENOR que o timeout padrao do
+// run_command (3 min) — um comando legitimo de 2+ min era reentregue e
+// executava DUAS vezes. Agora o lease acompanha o timeout pedido.
+const LEASE_MAX_MS = 32 * 60 * 1000; // teto: run_command chega a 30 min
+// um comando esta claimed enquanto o lease NAO expirou
+function estaClaimed(
+  s: { claimed: Map<number, { t: number; lease: number } | number> },
+  id: number,
+  now: number
+): boolean {
+  const v = s.claimed.get(id);
+  if (!v) return false;
+  if (typeof v === "number") return now - v < CLAIM_LEASE_MS; // formato antigo
+  return now - v.t < v.lease;
+}
+
+function leaseDoComando(c: { args?: Record<string, unknown> }): number {
+  const t = Number(c?.args?.timeoutMin);
+  if (isFinite(t) && t > 0) return Math.min(LEASE_MAX_MS, Math.max(CLAIM_LEASE_MS, t * 60_000 + 60_000));
+  return CLAIM_LEASE_MS;
+}
 const SNAPSHOT_EVERY_MS = 4000; // debounce das escritas não críticas
 
 function tokensEnv(...nomes: string[]): string[] {
@@ -173,6 +196,15 @@ export const CONNECTED_WINDOW_MS = 45_000;
 // Antes eram caminhos absolutos da máquina do autor — em qualquer outro
 // lugar a escrita falhava EACCES e o catch {} escondia o prejuízo.
 const DATA_DIR = process.env.PONTE_DATA_DIR || process.cwd();
+// v1.18.0: a pasta de dados nunca era criada. saveSeq/saveSnapshot falhavam
+// com ENOENT — e o PRIMEIRO comando era aceito (200) e nunca existia
+// (nem para o agente, nem depois de um restart); o segundo ja virava 503.
+// Criar a pasta no boot evita os dois.
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch (_) {
+  /* sem permissao: o relay segue, mas o /cmd recusa (503) e avisa */
+}
 const SEQ_FILE = path.join(DATA_DIR, ".ponte-seq");
 
 // Snapshot completo do relay (fila + histórico + specs por lane) — o arquivo
@@ -541,20 +573,40 @@ export function pollCommands(
     if (c.id <= cursor) return false;
     if (now - c.ts > PENDING_MAX_AGE_MS) return false; // comando velho não persegue agente
     if (temResultado(s, c.id)) return false;
-    const claimedAt = s.claimed.get(c.id);
-    if (claimedAt && now - claimedAt < CLAIM_LEASE_MS) return false;
+    if (estaClaimed(s, c.id, now)) return false;
     return true;
   });
   const { entregues, cortado } = cabemNoTeto(pending); // v1.5.1: teto por poll
-  for (const c of entregues) s.claimed.set(c.id, now); // só o entregado é reclamado
+  // v1.18.0: o lease acompanha o timeout do comando (um run_command de 3 min
+  // nao podia ser reentregue em 2 min e executado DUAS vezes)
+  for (const c of entregues) s.claimed.set(c.id, { t: now, lease: leaseDoComando(c) });
   if (s.claimed.size > 500) {
-    for (const [id, t] of s.claimed) if (now - t > CLAIM_LEASE_MS) s.claimed.delete(id);
+    for (const [id, v] of s.claimed) {
+      const t = typeof v === "object" && v !== null ? v.t : v;
+      const lease = typeof v === "object" && v !== null ? v.lease : CLAIM_LEASE_MS;
+      if (now - t > lease) s.claimed.delete(id);
+    }
   }
-  const maxId = s.commands.length ? s.commands[s.commands.length - 1].id : cursor;
-  // cortado: o cursor NÃO passa pelos não entregues — ficam para o próximo poll
-  const nextCursor = cortado
-    ? Math.max(cursor, entregues.length ? entregues[entregues.length - 1].id : 0)
-    : Math.max(maxId, cursor);
+  // v1.18.0: o cursor NUNCA pode passar de um comando PENDENTE da lane.
+  // Antes o nextCursor era o id maximo do store inteiro: um comando
+  // normalmente entregue (lease ativo) era pulado e sumia PARA SEMPRE —
+  // o filtro "id <= cursor" o descartava nas polls seguintes.
+  //
+  // O calculo usa os NAO CONCLUIDOS (sem resultado), e nao o `pending`:
+  // o `pending` ja exclui os claimed, ou seja, os que foram entregues e
+  // ainda nao responderam — que sao exatamente os que nao podem ser
+  // pulados.
+  const naoConcluidos = mine.filter((c) => {
+    if (c.id <= cursor) return false;
+    if (now - c.ts > PENDING_MAX_AGE_MS) return false;
+    if (temResultado(s, c.id)) return false;
+    return true;
+  });
+  const menorPendente = naoConcluidos.length ? Math.min(...naoConcluidos.map((c) => c.id)) : 0;
+  const maiorEntregue = entregues.length ? entregues[entregues.length - 1].id : cursor;
+  const nextCursor = menorPendente
+    ? Math.max(0, menorPendente - 1)
+    : Math.max(cursor, maiorEntregue);
   return { commands: entregues, nextCursor };
 }
 
@@ -568,17 +620,20 @@ export function pollFresh(lane: LaneId): { commands: PonteCommand[]; nextCursor:
     if (c.lane !== lane) return false;
     if (now - c.ts > PENDING_MAX_AGE_MS) return false;
     if (temResultado(s, c.id)) return false;
-    const claimedAt = s.claimed.get(c.id);
-    if (claimedAt && now - claimedAt < CLAIM_LEASE_MS) return false;
+    if (estaClaimed(s, c.id, now)) return false;
     return true;
   });
   const { entregues, cortado } = cabemNoTeto(pendings); // v1.5.1: teto por poll
-  for (const c of entregues) s.claimed.set(c.id, now);
-  const maxId = s.commands.length ? s.commands[s.commands.length - 1].id : 0;
-  // cortado: cursor fica no último entregue — o resto vem no poll seguinte
+  for (const c of entregues) s.claimed.set(c.id, { t: now, lease: leaseDoComando(c) });
+  // v1.18.0: o cursor nao passa dos pendentes (o id maximo do store
+  // inteiro pulava comandos de outras lanes e da propria lane)
+  const naoConcluidos = pendings.filter((c) => !temResultado(s, c.id));
+  const menores = naoConcluidos.map((c) => c.id);
+  const menorPendente = menores.length ? Math.min(...menores) : 0;
+  const maiorEntregue = entregues.length ? entregues[entregues.length - 1].id : 0;
   return {
     commands: entregues,
-    nextCursor: cortado ? (entregues.length ? entregues[entregues.length - 1].id : 0) : maxId,
+    nextCursor: menorPendente ? Math.max(0, menorPendente - 1) : maiorEntregue,
   };
 }
 

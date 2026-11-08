@@ -8,7 +8,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SRC="${1:-}"
 if [ -z "$SRC" ] && [ -f "$DIR/ponte.config.json" ]; then
-  SRC=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DIR/ponte.config.json','utf8')).server||'')}catch(e){}" 2>/dev/null || true)
+  # v1.18.0: o caminho era interpolado no codigo JS — um $HOME com aspas
+  # quebrava o comando (e o SRC ficava vazio, sem erro claro)
+  SRC=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).server||'')}catch(e){}" "$DIR/ponte.config.json" 2>/dev/null || true)
 fi
 [ -n "$SRC" ] || { echo "[x] uso: bash atualizar.sh URL-DO-RELAY (ex.: https://seu-relay)"; exit 1; }
 SRC="${SRC%/}"
@@ -19,7 +21,9 @@ for cand in "$DIR" "$HOME/ponte-agent" "$HOME/Downloads/ponte-agent" "$HOME/Docu
 done
 [ -n "$DEST" ] || { echo "[x] agent.js não encontrado (nem em $DIR nem nos caminhos padrão)"; exit 1; }
 
-TMP="$(mktemp)"
+# v1.18.0: o mktemp sem extensao quebrava o node --check (ERR_UNKNOWN_FILE_
+# EXTENSION) — o update NUNCA trocava o agente. O nome precisa terminar em .js
+TMP="$(mktemp --suffix=.js 2>/dev/null || mktemp).js"
 trap 'rm -f "$TMP"' EXIT
 echo "[*] baixando agente de: $SRC/api/ponte/download"
 curl -fsSL "$SRC/api/ponte/download" -o "$TMP" || { echo "[x] download falhou — versão atual INTACTA"; exit 1; }
@@ -29,9 +33,13 @@ if [ -f "$DEST/agent.js" ]; then
   cp "$DEST/agent.js" "$DEST/agent.js.bak"
 fi
 mv -f "$TMP" "$DEST/agent.js"
+# v1.18.0: o mktemp nasce 0600 e o mv mantem — o agent.js perdia o bit de
+# execucao (o rodar.sh o chamava por "node", mas o uso direto "./agent.js"
+# deixava de funcionar)
+chmod 755 "$DEST/agent.js" 2>/dev/null || true
 chmod 600 "$DEST/ponte.config.json" 2>/dev/null || true
 
-NOVA=$(node -e "try{console.log(require('$DEST/agent.js').VERSION)}catch(e){console.log('?')}" 2>/dev/null || echo "?")
+NOVA=$(node -e "try{console.log(require(process.argv[1]).VERSION)}catch(e){console.log('?')}" "$DEST/agent.js" 2>/dev/null || echo "?")
 echo ""
 echo "[✓] Agente atualizado: v$NOVA em $DEST"
 echo "    Backup da anterior: agent.js.bak (rollback: cp agent.js.bak agent.js)"

@@ -151,7 +151,33 @@ def main():
                         print(f"  ({baixado} bytes já gravados em {local} — arquivo parcial)")
                     return 2
                 data = r.get("data") or {}
-                raw = base64.b64decode(data.get("base64", ""))
+                # v1.18.0: o relay corta o payload grande no snapshot e marca
+                # com _cortado. Sem esta checagem, o base64 ausente virava
+                # "" e o arquivo ficava com 0 bytes — e o operador ainda
+                # imprimia "OK" (perda silenciosa de dados).
+                if data.get("_cortado"):
+                    print(f"ERRO: o relay devolveu o pedaço em offset {offset} CORTADO")
+                    print("  (o historico em disco guarda so o inicio do payload — refaça o download ao vivo)")
+                    if baixado:
+                        print(f"  ({baixado} bytes já gravados em {local} — arquivo parcial)")
+                    return 2
+                if "base64" not in data:
+                    print(f"ERRO: o relay nao devolveu base64 no offset {offset} (resposta inesperada: {str(data)[:120]})")
+                    if baixado:
+                        print(f"  ({baixado} bytes já gravados em {local} — arquivo parcial)")
+                    return 2
+                try:
+                    raw = base64.b64decode(data.get("base64", ""))
+                except Exception as e:
+                    print(f"ERRO: base64 invalido no offset {offset}: {e}")
+                    if baixado:
+                        print(f"  ({baixado} bytes já gravados em {local} — arquivo parcial)")
+                    return 2
+                if len(raw) == 0 and data.get("bytes"):
+                    print(f"ERRO: o relay devolveu um pedaço vazio no offset {offset}")
+                    if baixado:
+                        print(f"  ({baixado} bytes já gravados em {local} — arquivo parcial)")
+                    return 2
                 if f is None:
                     f = open(local, "wb")  # 1º pedaço válido chegou — agora sim
                 f.write(raw)
@@ -205,7 +231,12 @@ def main():
     action = sys.argv[1]
     args = {}
     if len(sys.argv) >= 3:
-        args = json.loads(sys.argv[2])
+        try:
+            args = json.loads(sys.argv[2])
+        except Exception as e:
+            print(f"ERRO: os argumentos nao sao JSON valido: {e}")
+            print("  use: ponte.py <acao> '{\"arg\":\"valor\"}'")
+            return 1
 
     since = get_since()
     out = req("/api/ponte/cmd", {"action": action, "args": args}, method="POST")

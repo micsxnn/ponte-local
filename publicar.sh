@@ -65,7 +65,10 @@ echo ""
 if ! git diff --quiet || ! git diff --cached --quiet; then
   erro "O repo tem alterações não commitadas. Commit ou stash antes."
 fi
-[ -z "$(git status --porcelain --untracked-files=no)" ] || erro "Repo sujo."
+# v1.18.0: a checagem ignorava os untracked (--untracked-files=no) mas o
+# "git add -A" commitava TUDO — um arquivo solto (nota, dump, .env) ia
+# para o repo e para o npm. Agora os untracked tambem barram o release.
+[ -z "$(git status --porcelain)" ] || erro "Repo sujo (inclui arquivos nao rastreados — versione ou remova antes)."
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [ "$BRANCH" = "main" ] || erro "Rode na branch main (você está em '$BRANCH')."
@@ -137,7 +140,19 @@ else console.log(maj+'.'+min+'.'+(pat+1));
 TAG="v$VER_REPO_NOV"
 
 # versao da SKILL (marcador skill-version no SKILL.md) — o manifesto usa ela
+VER_SKILL_ANT="$(grep -m1 -oE 'skill-version:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' SKILL.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo '0.0.0')"
 VER_SKILL_NOV="$(grep -m1 -oE 'skill-version:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+' SKILL.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo '0.0.0')"
+# v1.18.0: a versao da SKILL so mudava se alguem editasse o marcador. O
+# agente (e o npx update) so re-baixam quando a versao AUMENTA — entao uma
+# correcao na SKILL.md nunca chegava aos usuarios. O script bumpeia sozinho
+# (patch) quando o conteudo da skill mudou mas o marcador nao.
+if [ "$VER_SKILL_NOV" = "$VER_SKILL_ANT" ] && git diff --quiet HEAD -- SKILL.md agente/SKILL.md agente/LEIA-ME.md 2>/dev/null; then
+  : # nada mudou na skill: mantem a versao
+else
+  VER_SKILL_NOV="$(node -e "const [a,b,c]='$VER_SKILL_NOV'.split('.').map(Number);console.log(a+'.'+b+'.'+(c+1))")"
+  sed -i "s/skill-version:[[:space:]]*[0-9]\.[0-9]\.[0-9]\+/skill-version: $VER_SKILL_NOV/" SKILL.md
+  ok "versao da skill bumpeada para v$VER_SKILL_NOV"
+fi
 
 info "agente: $VER_AGENTE_ANT -> $VER_AGENTE_NOV"
 info "repo:   $VER_REPO_ANT -> $TAG"
@@ -210,7 +225,14 @@ fs.writeFileSync(f,s);
 # ------------------------------------------------------------------ 2. testes
 echo ""
 info "rodando os testes..."
-node agente/teste-trava.cjs || erro "Os testes falharam — nada foi publicado."
+if ! node agente/teste-trava.cjs; then
+  # v1.18.0: o bump ficava aplicado e o commit nao era feito — o repo
+  # ficava num estado intermediario e a execucao seguinte abortava em
+  # "repo sujo". Agora volta tudo.
+  git checkout -- package.json agente/agent.js agente/teste-trava.cjs README.md 2>/dev/null || true
+  git reset -q 2>/dev/null || true
+  erro "Os testes falharam — nada foi publicado (o bump foi desfeito)."
+fi
 
 # ------------------------------------------------------------------ 3. commit + tag + push
 git add -A

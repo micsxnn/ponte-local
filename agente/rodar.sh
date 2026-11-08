@@ -32,6 +32,20 @@ if [ $# -ge 2 ]; then
   # args na linha SEMPRE vencem a config antiga (v1.11.0 — antes trocar
   # de relay/token pelo rodar.sh era silenciosamente ignorado)
   exec "${AGENTE[@]}" --server "$1" --token "$2" --save
+elif [ $# -eq 1 ]; then
+  # v1.18.0: com SO a URL, a URL era silenciosamente ignorada (a config
+  # antiga ganhava) — agora o token vem da config e a URL da linha
+  if [ ! -f "$CONFIG" ]; then
+    echo "Uso: ./rodar.sh https://SEU-LINK SEU_TOKEN"
+    echo "(o link de preview e o token estão no chat)"
+    exit 1
+  fi
+  TOKEN_CFG="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).token||'')}catch(e){}" "$CONFIG" 2>/dev/null || true)"
+  if [ -z "$TOKEN_CFG" ]; then
+    echo "Uso: ./rodar.sh https://SEU-LINK SEU_TOKEN"
+    exit 1
+  fi
+  exec "${AGENTE[@]}" --server "$1" --token "$TOKEN_CFG" --save
 elif [ -f "$CONFIG" ]; then
   exec "${AGENTE[@]}"
 else

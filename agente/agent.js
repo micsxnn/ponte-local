@@ -167,7 +167,7 @@ let cfg = null; // preenchido no main()
 // digitando "rm -rf" (inofensivo sozinho), depois "/", depois Enter — cada
 // parte passaria, mas a LINHA COMPLETA é destrutiva. O buffer acumula o que
 // foi digitado e o Enter valida a linha inteira, como um terminal de verdade.
-let bufferLinha = "";
+// (a declaracao do buffer vive junto dos helpers do teclado, mais abaixo)
 
 // ---------------------------------------------------------------- utilidades
 function stamp() {
@@ -200,7 +200,14 @@ function audit(entry) {
       if (fs.statSync(LOG_FILE).size > 20 * 1024 * 1024)
         fs.renameSync(LOG_FILE, LOG_FILE + ".old");
     } catch (_) {}
-    fs.appendFileSync(LOG_FILE, JSON.stringify(Object.assign({ ts: stamp() }, entry)) + "\n");
+    // v1.18.0: o log ficava 0644 (qualquer usuario da maquina lia o
+    // historico inteiro de comandos) — agora e 0600, como a config.
+    // mode so vale na CRIACAO; um log antigo continua 0644 — por isso o
+    // chmod explicito.
+    fs.appendFileSync(LOG_FILE, JSON.stringify(Object.assign({ ts: stamp() }, entry)) + "\n", { mode: 0o600 });
+    try {
+      fs.chmodSync(LOG_FILE, 0o600);
+    } catch (_) {}
   } catch (_) {
     /* o log nunca deve derrubar o agente */
   }
@@ -772,7 +779,9 @@ function walk(rootRp, opts, cb) {
           queue.push({ p: full, depth: depth + 1 });
         continue;
       }
-      if (ent.isFile()) cb(full);
+      // v1.18.0: o search por conteudo lia .env/.npmrc/.git-credentials
+      // (o read_text bloqueia, o search despejava o mesmo segredo)
+      if (ent.isFile() && !BLOCKED_FILES.has(ent.name)) cb(full);
     }
   }
   return visited;
@@ -1039,10 +1048,87 @@ function fmtMB(n) {
 // No modo autônomo os comandos rodam SEM confirmação — mas os padrões abaixo
 // são recusados sempre: destroem o sistema de uma vez e não têm desfazer.
 // No modo supervisionado não se aplica (quem decide é o humano, com o aviso).
-const ALVO_SISTEMA = /^(~\/?|\$HOME\/?|\/\*?|\/home\/?|\/home\/\*|\/boot(\/.*)?|\/etc(\/.*)?|\/usr(\/.*)?|\/var(\/.*)?|\/lib(\/.*)?|\/opt(\/.*)?|\/mnt(\/.*)?|\/media(\/.*)?|\*)$/;
+const ALVO_SISTEMA = /^(~\/?|\$HOME\/?|\/\*?|\/home\/?|\/home\/\*|\/boot(\/.*)?|\/etc(\/.*)?|\/usr(\/.*)?|\/var(\/.*)?|\/lib(\/.*)?|\/opt(\/.*)?|\/mnt(\/.*)?|\/media(\/.*)?|\/dev(\/.*)?|\/sys(\/.*)?|\/run(\/.*)?|\/proc(\/.*)?|\/root(\/.*)?|\*)$/;
 
 // Alvos catastróficos no Windows (raiz de drive, pastas do sistema, home).
-const ALVO_SISTEMA_WIN = /^(?:[a-z]:\\?|[a-z]:\\windows(?:\\.*)?|[a-z]:\\program files(?: \(x86\))?(?:\\.*)?|\$home|~\/?|%systemroot%)$/i;
+const ALVO_SISTEMA_WIN = /^(?:[a-z]:[\\/]?|[a-z]:[\\/]windows(?:[\\/].*)?|[a-z]:[\\/]program files(?: \(x86\))?(?:[\\/].*)?|[a-z]:[\\/]programdata(?:[\\/].*)?|[a-z]:[\\/]users(?:[\\/].*)?|\$home|~\/?|%systemroot%|\$env:(?:windir|systemroot|userprofile|programdata|username|computername))$/i;
+
+// ---- v1.18.0: modelo estruturado do comando --------------------------
+// A trava olhava a STRING do comando, entao "sudo -n rm -rf /", "bash -lc
+// 'rm -rf /'" e "mv / /tmp/x" passavam. Aqui cada segmento da linha e
+// lido como comando REAL: o primeiro token que nao e um "elevador" de
+// privilegio (sudo/su/doas/pkexec/env/timeout/nice/command) e o comando.
+const ELEVADORES = new Set([
+  "sudo", "su", "doas", "pkexec", "env", "timeout", "nice", "ionice",
+  "stdbuf", "setsid", "nohup", "command", "builtin", "exec", "eval",
+]);
+
+// extrai o comando principal de um segmento (ignora elevadores e as
+// flags deles): "sudo -n rm -rf /" -> "rm"; "cmd /c rd /s" -> "rd"
+function comandoPrincipal(seg) {
+  let toks = String(seg || "").trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  // remove o wrapper do shell: cmd /c, powershell -c, bash -c
+  while (i < toks.length) {
+    const t = toks[i].toLowerCase();
+    if (t === "cmd" || t === "cmd.exe" || t === "command.com") {
+      i++;
+      while (i < toks.length && toks[i].startsWith("/")) i++;
+      if (i < toks.length && ["c", "k", "/c", "/k"].includes(toks[i].toLowerCase())) i++;
+      continue;
+    }
+    if (t === "powershell" || t === "powershell.exe" || t === "pwsh") {
+      i++;
+      while (i < toks.length && toks[i].startsWith("-")) i++;
+      if (i < toks.length && ["-c", "-command", "-encodedcommand"].includes(toks[i].toLowerCase())) i++;
+      continue;
+    }
+    if (ELEVADORES.has(t)) {
+      i++;
+      // pula as flags do elevador (sudo -n -u root, env FOO=bar)
+      while (i < toks.length) {
+        const tk = toks[i];
+        if (tk.startsWith("-")) {
+          i++;
+          continue;
+        }
+        // "env FOO=bar CMD" — pula as atribuicoes
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tk)) {
+          i++;
+          continue;
+        }
+        // "sudo -u root CMD" — o valor da flag fica como token seguinte
+        if (i > 0 && /^-[uUgG]$/.test(toks[i - 1])) {
+          i++;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+    break;
+  }
+  return i < toks.length ? toks[i].replace(/["']/g, "") : "";
+}
+
+// os tokens (flags inclusas) depois do comando principal
+function tokensDoSegmento(seg, comando) {
+  const toks = String(seg || "").trim().split(/\s+/).filter(Boolean);
+  const i = toks.findIndex((t) => t.replace(/["']/g, "") === comando);
+  if (i < 0) return [];
+  return toks.slice(i + 1);
+}
+
+// os argumentos (nao-flag) de um segmento depois do comando principal
+function argumentosDoSegmento(seg, comando) {
+  return tokensDoSegmento(seg, comando).filter((t) => t && !t.startsWith("-"));
+}
+
+// um alvo com glob (* ou ?) nao pode ser checado literalmente: o shell
+// expande. "rm -rf /home/u/*" apaga a home INTEIRA mesmo sem o glob.
+function temGlob(alvo) {
+  return /[*?]/.test(String(alvo || ""));
+}
 
 function dangerCheck(cmdline, ctx) {
   const homeRes = ctx && ctx.home ? path.resolve(String(ctx.home)) : null;
@@ -1051,8 +1137,103 @@ function dangerCheck(cmdline, ctx) {
   // fork bomb clássico: :(){ :|:& };:
   if (/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?/.test(cmdline)) return "fork bomb";
   // expansão aninhada esconde o comando real do analisador (v1.12.0)
-  if (/\$\(/.test(cmdline) || /`/.test(cmdline) || />\(/.test(cmdline))
-    return "expansão de comando ($( ), backtick ou >() — reformule sem aninhamento";
+  if (/\$\(/.test(cmdline) || /`/.test(cmdline) || />\(/.test(cmdline) || /<\(/.test(cmdline))
+    return "expansão de comando ($( ), backtick, <() ou >() — reformule sem aninhamento";
+  // fork bomb em forma de função: "bomb(){ bomb|bomb & }; bomb"
+  if (/\b\w+\s*\(\s*\)\s*\{[^}]*\|\s*\w+\s*&[^}]*\}\s*;?/.test(cmdline))
+    return "fork bomb (função recursiva)";
+  // ---- v1.18.0: os bypasses que a auditoria achou -------------------
+  // A regra real e "acao perigosa", nao "string perigosa". Estas formas
+  // executam um comando destrutivo ESCONDIDO dentro de outra coisa.
+  const segs = cmdline.split(/\n|;|&&|\|\||\||&/);
+  const cmds = segs.map((g) => comandoPrincipal(g));
+  // shell dentro de shell: bash -c, bash -lc, sh -c (com ou sem aspas)
+  if (/\b(?:ba|z|k|da|c|tc|fi)?sh\b\s+-[a-z]*c\b/i.test(cmdline))
+    return "shell dentro de shell (-c) — o comando real fica escondido";
+  // eval: executa o que for passado
+  if (cmds.some((c) => c === "eval")) return "eval (executa texto como comando)";
+  // interpretador com codigo inline: python -c, perl -e, ruby -e, node -e
+  for (const seg of segs) {
+    const c = comandoPrincipal(seg).toLowerCase();
+    if (/^(python[0-9.]*|perl|ruby|php|node|nodejs|lua|tclsh|awk)$/.test(c)) {
+      const resto = tokensDoSegmento(seg, c);
+      if (resto.some((a) => /^-[a-z]*[ecr]$/i.test(a)))
+        return "interpretador com codigo inline (" + c + ") — o comando real fica escondido";
+    }
+    // source / . / ./script: executar script
+    if (c === "source" || c === ".") return "execucao de script (source)";
+    if (/^\.\//.test(c) || /^\.\w+\.sh$/.test(c)) return "execucao de script";
+    // alias: define um comando perigoso para o proximo
+    if (c === "alias" || c === "unalias") return "alias de comando — reformule sem alias";
+    // history expansion do shell: !! repete o comando anterior
+    if (/!!/.test(seg)) return "expansão de histórico (!!)";
+  }
+  // ler credenciais do sistema (qualquer leitor, nao so o cat)
+  for (const seg of segs) {
+    const c = comandoPrincipal(seg).toLowerCase();
+    if (/^(cat|head|tail|less|more|sed|grep|awk|strings|nl|cut|tac|xxd|od|base64|cp|install|rsync)$/.test(c)) {
+      const resto = argumentosDoSegmento(seg, c).join(" ");
+      if (/\/(?:etc\/shadow|etc\/gshadow|etc\/sudoers)\b/.test(resto))
+        return "leitura de arquivo de credenciais (" + c + ")";
+    }
+  }
+  // ler credenciais do USUARIO (a trava de pastas sensiveis nao vale para
+  // o run_command — ele roda no shell, fora do escopo de arquivos)
+  if (/(?:^|[\s'"/~])\/?(?:home\/[a-z0-9._-]+)?\/\.(?:ssh|aws|gnupg|config|kube|npmrc|netrc|git-credentials|password-store|docker|bash_history|zsh_history|local_history)\b/i.test(cmdline))
+    return "leitura de credencial do usuario (pasta sensivel)";
+  if (/\bprintenv\b|\/proc\/self\/environ/i.test(cmdline))
+    return "leitura de variaveis de ambiente (podem conter segredos)";
+  // derrubar a maquina / o servico / o usuario
+  if (cmds.some((c) => ["shutdown", "reboot", "halt", "poweroff", "init"].includes(c.toLowerCase())))
+    return "desligar/reiniciar a maquina";
+  if (/\bkill\s+(-9\s+)?1\b/.test(cmdline) || /\bpkill\b[^|;&]*\broot\b/i.test(cmdline))
+    return "matar o init/root";
+  if (/\bservice\s+\S+\s+stop\b/i.test(cmdline)) return "parar servico (service)";
+  if (/\b(?:apt-get|apt|dpkg|yum|dnf|rpm)\s+[^|;&]*\b(?:remove|purge|uninstall|autoremove)\b/i.test(cmdline))
+    return "remocao de pacote do sistema";
+  if (/\bpacman\b[^|;&]*\s-[a-zA-Z]*R[a-zA-Z]*\b/i.test(cmdline))
+    return "remocao de pacote do sistema (pacman -R)";
+  if (/\biptables\b[^|;&]*\s-F\b|\bnft\b[^|;&]*\bflush\b|\bufw\b[^|;&]*\bflush\b/i.test(cmdline))
+    return "limpar firewall";
+  if (/\b(?:chattr|setfacl)\b[^|;&]*\s+[^|;&]*\s+\//.test(cmdline))
+    return "mudar atributos/ACL na raiz";
+  if (/\buserdel\b|\bdeluser\b|\bgroupdel\b/i.test(cmdline)) return "remover usuario/grupo";
+  // limpeza em massa de docker: apaga volumes/imagens/containers
+  if (/\bdocker\b[^|;&]*\b(?:system|volume|image|container|network)\s+prune\b/i.test(cmdline))
+    return "docker prune (limpeza em massa)";
+  // copiar alvo de sistema: "cp -a / /tmp/copia" cria uma copia do sistema
+  // inteiro (e o original continua la — mas o espelho é perigoso e ocupa
+  // o disco todo)
+  for (const seg of segs) {
+    const c = comandoPrincipal(seg).toLowerCase();
+    if (c === "cp" || c === "rsync" || c === "tar" || c === "dd") {
+      for (const alvo of argumentosDoSegmento(seg, c)) {
+        const limpo = alvo.replace(/["']/g, "");
+        if (!limpo) continue;
+        const base = temGlob(limpo) ? limpo.split(/[*?]/)[0] : limpo;
+        if (base === "/" || base === "/*" || ALVO_SISTEMA.test(base))
+          return "copiar alvo de sistema (" + alvo + ")";
+      }
+    }
+  }
+  // escrever em dispositivo por ferramentas que nao sao dd/shred
+  if (/\b(hdparm|badblocks|blkdiscard|mkswap|fsck|resize2fs|mke2fs|mkdosfs|lvremove|sgdisk|gdisk|dmsetup|cryptsetup)\b[^|;&]*\/?dev\/(sd|nvme|mmcblk|hd|vd|mapper|disk|vg|xvd|md)/i.test(cmdline))
+    return "escrita em dispositivo (ferramenta de disco)";
+  if (/\bzpool\b[^|;&]*\bdestroy\b/i.test(cmdline)) return "zpool destroy (apaga o pool)";
+  // encher o disco (DoS persistente)
+  if (/\b(?:truncate|fallocate|dd)\b[^|;&]*\s+(?:-s\s+)?\d+[GM]/i.test(cmdline) && !/\bof=\/dev\//i.test(cmdline))
+    return "criar arquivo gigante (DoS de disco)";
+  if (/\bdd\b[^|;&]*\bof=\s*\/(?!dev\/)/i.test(cmdline) && /\bcount=\d{6,}/i.test(cmdline))
+    return "dd com count enorme (DoS de disco)";
+  // Windows: registry, contas, antivirus, boot
+  if (/\breg\s+(?:delete|remove)\b[^|;&]*\bHK(?:LM|CU|U|CR)\b/i.test(cmdline))
+    return "reg delete (registro do Windows)";
+  if (/\bnet\s+user\b[^|;&]*\/(?:delete|add)\b/i.test(cmdline))
+    return "net user (conta do Windows)";
+  if (/\bset-mppreference\b/i.test(cmdline)) return "desligar o antivirus do Windows";
+  if (/\bbcdedit\b/i.test(cmdline)) return "bcdedit (boot do Windows)";
+  if (/\btakeown\b|\bicacls\b[^|;&]*\/reset/i.test(cmdline))
+    return "mudar dono/permissoes do sistema";
   // formatar / apagar assinaturas de filesystem
   if (/\bmkfs(\.[a-z0-9]+)?\b/i.test(cmdline)) return "mkfs (formatar filesystem)";
   if (/\bwipefs\b/i.test(cmdline)) return "wipefs";
@@ -1061,6 +1242,8 @@ function dangerCheck(cmdline, ctx) {
     return "dd escrevendo em dispositivo";
   if (/\bshred\b[^|;&]*\/dev\/(sd|nvme|mmcblk|hd|vd)/i.test(cmdline))
     return "shred em dispositivo";
+  // shred em arquivo comum: sobrescreve o conteudo e NAO passa pela lixeira
+  if (/\bshred\b/i.test(cmdline)) return "shred (apaga sem lixeira, sem desfazer)";
   if (/(^|[^a-z0-9])>\s*\/dev\/(sd|nvme|mmcblk|hd|vd)/i.test(cmdline))
     return "escrita direta em dispositivo";
   // destruição em massa além do rm (v1.11.0): find -delete, xargs destrutivo,
@@ -1074,8 +1257,11 @@ function dangerCheck(cmdline, ctx) {
     return "xargs com comando destrutivo (flags no meio)";
   if (/(\||^)\s*(sudo\s+)?tee\s+[^|;&]*\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
     return "tee escrevendo em dispositivo";
-  if (/(^|[^a-z0-9])>>?\s*\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
+  if (/(^|[^a-z0-9])>>?\s*\/dev\/(sd|nvme|mmcblk|hd|vd|mapper|sysrq-trigger|kmsg|sync|console)\b/i.test(cmdline))
     return "escrita direta em dispositivo";
+  // qualquer escrita em /dev: sysrq, consoles, kmsg...
+  if (/(^|[^a-z0-9])>>?\s*\/dev\//i.test(cmdline) && !/\/dev\/(null|zero|random|urandom|stdin|stdout|stderr|tty|fd\/)\b/i.test(cmdline))
+    return "escrita em /dev";
   if (/\bcp\b[^|;&]*\s\/dev\/(sd|nvme|mmcblk|hd|vd|mapper)/i.test(cmdline))
     return "cp escrevendo em dispositivo";
   if (/\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/i.test(cmdline))
@@ -1107,6 +1293,9 @@ function dangerCheck(cmdline, ctx) {
   // find com -exec/-execdir rodando um destrutivo
   if (/\bfind\b[^|;&]*\s-(?:exec|execdir)\b[^|;&]*\b(rm|dd|mkfs|shred|chmod|chown)\b/i.test(cmdline))
     return "find com -exec destrutivo";
+  // find -exec com interpretador: "find / -exec python3 -c '...'"
+  if (/\bfind\b[^|;&]*\s-(?:exec|execdir)\b[^|;&]*\b(?:python[0-9.]*|perl|ruby|php|node|bash|sh|zsh)\b/i.test(cmdline))
+    return "find com -exec de interpretador";
   // execucao de script: sh x.sh, bash x.sh (o sh tem que ser o COMANDO)
   if (algumPrincipal("sh", "bash", "zsh", "ksh", "dash", "csh", "tcsh") && /\.(?:sh|bash)\b/.test(cmdline))
     return "execucao de script";
@@ -1178,30 +1367,74 @@ function dangerCheck(cmdline, ctx) {
   };
   const segmentos = cmdline.split(/\n|;|&&|\|\||\||&/);
   for (const seg of segmentos) {
-    const m = seg.trim().match(/^(?:sudo\s+)?rm\s+(.+)$/);
-    if (!m) continue;
-    const toks = m[1].split(/\s+/);
-    const flags = toks.filter((t) => /^-{1,2}\S/.test(t));
-    const alvos = toks.filter((t) => t && !/^-{1,2}/.test(t));
-    if (!flags.some(ehRecursivo)) continue; // só interessa rm recursivo
-    for (const alvo of alvos) {
-      const limpo = alvo.replace(/["']/g, "");
-      if (!limpo || limpo.startsWith("-")) continue;
-      if (/\$/.test(limpo))
-        return "rm recursivo com variável não resolvida (" + alvo + ") — use caminho literal";
-      if (/(^|\/)\.\.?(\/|$)/.test(limpo))
-        return "rm recursivo com '.'/'..' no alvo (" + alvo + ")";
-      if (ALVO_SISTEMA.test(limpo))
-        return "rm recursivo em alvo de sistema (" + alvo + ")";
-      // home literal e alvo relativo (v1.12.0): "rm -rf /home/u" e
-      // "cd / && rm -rf etc" passavam — resolve contra o cwd e re-testa
-      if (homeRes) {
-        const exp = /^~/.test(limpo) ? path.join(homeRes, limpo.slice(1)) : limpo;
-        const resolvido = path.isAbsolute(exp)
-          ? path.resolve(exp)
-          : path.resolve(cwdRes || homeRes, exp);
-        if (resolvido === homeRes || ALVO_SISTEMA.test(resolvido))
-          return "rm recursivo em alvo catastrófico (" + alvo + " → " + resolvido + ")";
+    const cmd = comandoPrincipal(seg);
+    // rm: usa o comando real (sudo -n rm, cmd /c rm, etc.)
+    if (cmd.toLowerCase() === "rm") {
+      const toks = seg.trim().split(/\s+/);
+      const flags = toks.filter((t) => /^-{1,2}\S/.test(t));
+      const alvos = toks.filter((t) => t && !/^-{1,2}/.test(t)).slice(1);
+      if (!flags.some(ehRecursivo)) continue; // só interessa rm recursivo
+      for (const alvo of alvos) {
+        const limpo = alvo.replace(/["']/g, "");
+        if (!limpo || limpo.startsWith("-")) continue;
+        if (/\$/.test(limpo))
+          return "rm recursivo com variável não resolvida (" + alvo + ") — use caminho literal";
+        if (/(^|\/)\.\.?(\/|$)/.test(limpo))
+          return "rm recursivo com '.'/'..' no alvo (" + alvo + ")";
+        if (ALVO_SISTEMA.test(limpo))
+          return "rm recursivo em alvo de sistema (" + alvo + ")";
+        // v1.18.0: glob — o shell expande "rm -rf /home/u/*" e apaga a
+        // home INTEIRA. O alvo literal "/home/u/*" nao casava com nada.
+        if (temGlob(limpo)) {
+          const base = limpo.split(/[*?]/)[0].replace(/\/+$/, "");
+          if (homeRes) {
+            const exp = /^~/.test(base) ? path.join(homeRes, base.slice(1)) : base;
+            const resolvido = path.isAbsolute(exp)
+              ? path.resolve(exp)
+              : path.resolve(cwdRes || homeRes, exp);
+            if (resolvido === homeRes || ALVO_SISTEMA.test(resolvido))
+              return "rm recursivo com glob em alvo catastrófico (" + alvo + " → " + resolvido + ")";
+          }
+          if (ALVO_SISTEMA.test(base) || base === "/")
+            return "rm recursivo com glob em alvo de sistema (" + alvo + ")";
+          // glob na home de QUALQUER usuario: "rm -rf /home/u/*" apaga
+          // tudo do usuario u
+          if (/^\/home\/[^/]+$/.test(base.replace(/\/+$/, "")))
+            return "rm recursivo com glob na home de um usuario (" + alvo + ")";
+        }
+        // home literal e alvo relativo (v1.12.0): "rm -rf /home/u" e
+        // "cd / && rm -rf etc" passavam — resolve contra o cwd e re-testa
+        if (homeRes) {
+          const exp = /^~/.test(limpo) ? path.join(homeRes, limpo.slice(1)) : limpo;
+          const resolvido = path.isAbsolute(exp)
+            ? path.resolve(exp)
+            : path.resolve(cwdRes || homeRes, exp);
+          if (resolvido === homeRes || ALVO_SISTEMA.test(resolvido))
+            return "rm recursivo em alvo catastrófico (" + alvo + " → " + resolvido + ")";
+        }
+      }
+    }
+    // v1.18.0: mv e tanmove sao tan destrutivos quanto rm (mover "/" para
+    // fora do lugar quebra o sistema). Antes nenhum mv era coberto.
+    if (cmd.toLowerCase() === "mv" || cmd.toLowerCase() === "ren" || cmd.toLowerCase() === "rename") {
+      const alvos = argumentosDoSegmento(seg, cmd);
+      for (const alvo of alvos) {
+        const limpo = alvo.replace(/["']/g, "");
+        if (!limpo || limpo.startsWith("-")) continue;
+        if (/\$/.test(limpo))
+          return "mv com variável não resolvida (" + alvo + ")";
+        if (temGlob(limpo)) continue; // glob com mv é raro e o alvo resolve diferente
+        const ehRaiz = limpo === "/" || limpo === "/*" || limpo === "/." || limpo === "/..";
+        if (ehRaiz || ALVO_SISTEMA.test(limpo))
+          return "mv de alvo de sistema (" + alvo + ")";
+        if (homeRes) {
+          const exp = /^~/.test(limpo) ? path.join(homeRes, limpo.slice(1)) : limpo;
+          const resolvido = path.isAbsolute(exp)
+            ? path.resolve(exp)
+            : path.resolve(cwdRes || homeRes, exp);
+          if (resolvido === homeRes || ALVO_SISTEMA.test(resolvido))
+            return "mv de alvo catastrófico (" + alvo + " → " + resolvido + ")";
+        }
       }
     }
   }
@@ -1239,27 +1472,51 @@ function dangerCheck(cmdline, ctx) {
   };
   for (const seg of cmdline.split(/\n|;|&&|\|\||\||&/)) {
     const s = seg.trim();
+    // v1.18.0: usa o comando REAL do segmento — "cmd /c rd /s /q C:\"
+    // nao casava porque o regex exigia rd no COMECO do segmento.
+    const cmdReal = comandoPrincipal(s).toLowerCase();
     // /s em QUALQUER posição (v1.12.0): "rd C:\ /s /q" passava — cmd.exe
     // aceita a flag DEPOIS do alvo
-    const mRd = s.match(/^(?:rd|rmdir)\s+(.+)$/i);
-    if (mRd && /(?:^|\s)\/s\b/i.test(mRd[1])) {
-      const alvo = acharAlvo(mRd[1], (t) => t.startsWith("/"));
-      if (alvo) return "rd recursivo em alvo de sistema (" + alvo + ")";
+    if (cmdReal === "rd" || cmdReal === "rmdir") {
+      const resto = tokensDoSegmento(s, cmdReal).join(" ");
+      if (/(?:^|\s)\/s\b/i.test(resto)) {
+        const alvo = acharAlvo(resto, (t) => t.startsWith("/"));
+        if (alvo) return "rd recursivo em alvo de sistema (" + alvo + ")";
+      }
     }
-    const mDel = s.match(/^del\s+(.+)$/i);
-    if (mDel && /(?:^|\s)\/s\b/i.test(mDel[1])) {
-      const alvo = acharAlvo(mDel[1], (t) => t.startsWith("/"));
-      if (alvo) return "del /s em alvo de sistema (" + alvo + ")";
+    if (cmdReal === "del") {
+      const resto = tokensDoSegmento(s, cmdReal).join(" ");
+      if (/(?:^|\s)\/s\b/i.test(resto)) {
+        const alvo = acharAlvo(resto, (t) => t.startsWith("/"));
+        if (alvo) return "del /s em alvo de sistema (" + alvo + ")";
+      }
     }
     // aliases PowerShell (v1.12.0): ri/del/erase = Remove-Item; -r = -Recurse
+    // v1.18.0: faltavam rm/rd/del/erase/rdir — o PowerShell aceita TODOS
+    // como apelidos de Remove-Item, e so o "ri" era mapeado.
     const psNorm = s
-      .replace(/\bri\b/gi, "Remove-Item")
-      .replace(/\s-r\b(?![a-z-])/gi, " -Recurse");
+      .replace(/\b(ri|rm|rd|del|erase|rdir)\b/gi, "Remove-Item")
+      .replace(/\s-r\b(?![a-z-])/gi, " -Recurse")
+      .replace(/\s-recurse\b/gi, " -Recurse");
     if (/\bremove-item\b/i.test(psNorm) && /-recurse/i.test(psNorm)) {
       const depois = psNorm.replace(/^[\s\S]*?\bremove-item\b\s*/i, "");
       const alvo = acharAlvo(depois, (t) => t.startsWith("-"));
       if (alvo) return "Remove-Item recursivo em alvo de sistema (" + alvo + ")";
     }
+    // pipeline do PowerShell: "Get-ChildItem C:\ | Remove-Item -Recurse -Force"
+    // — o alvo (C:\) esta no segmento ANTERIOR do pipe
+    if (/remove-item\b/i.test(psNorm) && /-recurse/i.test(psNorm) && /\|/i.test(cmdline)) {
+      const antesPipe = cmdline.split(/\|/)[0];
+      const alvoPipe = acharAlvo(antesPipe, (t) => t.startsWith("-"));
+      if (alvoPipe) return "Remove-Item recursivo via pipeline em alvo de sistema (" + alvoPipe + ")";
+    }
+    // v1.18.0: o alvo do Windows tambem vem com $env:windir e barra normal
+    // (C:/Windows). O catWin acima ja reconhece $env:... e C:/.
+    // .NET Delete direto: [System.IO.Directory]::Delete('C:\', $true)
+    if (/\[\s*system\.io\.directory\s*\]\s*::\s*delete/i.test(s))
+      return "excluir diretorio via .NET";
+    if (/\[\s*system\.io\.file\s*\]\s*::\s*delete/i.test(s))
+      return "excluir arquivo via .NET";
   }
   return null;
 }
@@ -2342,6 +2599,10 @@ async function converterParaJpg(pngBuf, destino, qualidade) {
 // ---------------------------------------------------------------- ação
 async function capturarScreenshot(opts) {
   const plataforma = process.platform;
+  auditarTelaMouse(
+    opts.janela ? "screenshot_window" : "screenshot",
+    opts.janela ? "captura de janela" : "captura de tela inteira"
+  );
   const formato = normalizarFormato(opts.format);
   const qualidade = Math.min(100, Math.max(1, Number(opts.quality) || 85));
   const destino = caminhoTemp(formato === "jpg" ? "shot.jpg" : "shot.png");
@@ -2789,6 +3050,7 @@ async function mouseMac(op, o) {
 // ---------------------------------------------------------------- ação
 async function executarMouse(op, opts) {
   const plataforma = process.platform;
+  auditarTelaMouse("mouse_" + op, op === "click" ? "clique em (" + opts.x + "," + opts.y + ")" : op);
   const o = {
     x: coord("x", opts.x || 0),
     y: coord("y", opts.y || 0),
@@ -3252,22 +3514,59 @@ const ATALHOS_BLOQUEADOS = {
   "ctrl+w": "fecha a aba",
 };
 
+// ---- v1.18.0: o buffer virou um MODELO do prompt ----------------------
+// Antes era uma string só: a posicao do cursor nao existia, entao
+// "home"/"end"/"left"/"right" dessincronizavam o modelo (a IA inseria
+// texto no inicio da linha e a trava validava a string errada).
+// Agora sao dois ponteiros: texto e cursor.
+let bufferLinha = "";
+let bufferCursor = 0; // posicao do cursor dentro do buffer
+
 // devolve o texto da linha atual (o que o Enter vai executar)
 function linhaAtual() {
   return bufferLinha.replace(/\s+$/, "");
 }
 
-// um Enter limpa a linha (o comando foi executado)
-function bufferAcumula(texto) {
-  bufferLinha += texto;
-  if (bufferLinha.length > TECLADO_MAX_BUFFER)
-    bufferLinha = bufferLinha.slice(-TECLADO_MAX_BUFFER);
-  // newline no texto digitado tambem fecha a linha
-  if (texto.includes("\n")) bufferLinha = "";
+// o texto ATE o cursor (o que o shell vai ler se o Enter for apertado
+// agora com o cursor no meio da linha)
+function textoAteOCursor() {
+  return bufferLinha.slice(0, bufferCursor);
 }
 
+// um Enter limpa a linha (o comando foi executado)
+function bufferAcumula(texto) {
+  const partes = String(texto == null ? "" : texto).split("\n");
+  // a ultima parte e a linha VIVA (a anterior foi executada pelo \n)
+  const ultima = partes[partes.length - 1];
+  if (partes.length > 1) {
+    // houve \n: a linha anterior foi executada — o buffer vira so a ultima
+    bufferLinha = ultima;
+    bufferCursor = bufferLinha.length;
+  } else {
+    bufferLinha = bufferLinha.slice(0, bufferCursor) + ultima + bufferLinha.slice(bufferCursor);
+    bufferCursor += ultima.length;
+  }
+  if (bufferLinha.length > TECLADO_MAX_BUFFER) {
+    bufferLinha = bufferLinha.slice(-TECLADO_MAX_BUFFER);
+    bufferCursor = bufferLinha.length;
+  }
+}
+
+// move o cursor (home/end/left/right) mantendo o modelo fiel
+function bufferMoveCursor(tecla) {
+  if (tecla === "home") bufferCursor = 0;
+  else if (tecla === "end") bufferCursor = bufferLinha.length;
+  else if (tecla === "left") bufferCursor = Math.max(0, bufferCursor - 1);
+  else if (tecla === "right") bufferCursor = Math.min(bufferLinha.length, bufferCursor + 1);
+}
+
+// o TAB completa o comando: o texto real NAO e conhecido (o shell
+// expande). Por isso o TAB nao pode ser usado para completar uma linha
+// perigosa — o agente valida a linha ANTES de completar, e a linha
+// completa nunca e reavaliada. Bloqueado por seguranca.
 function bufferLimpa() {
   bufferLinha = "";
+  bufferCursor = 0;
 }
 
 // valida uma linha do prompt contra a trava. devolve o motivo do bloqueio
@@ -3344,12 +3643,29 @@ async function executarTeclado(op, opts) {
           "anticatástrofe. Use keyboard_type para digitar o texto."
       );
 
-    // ---- ENTER (com ou sem modificador) e TAB ----
+    // ---- COLAR (shift+insert e o atalho padrao do Windows e do X11) ----
+    // v1.18.0: o bloqueio era so por "ctrl+v" — shift+insert colava igual
+    if (principal === "insert" || (principal === "v" && modificadores.includes("shift") && !modificadores.includes("ctrl")))
+      throw new Error(
+        "Colar (shift+insert) é BLOQUEADO: o conteúdo colado não passa pela " +
+          "trava anticatástrofe. Use keyboard_type para digitar o texto."
+      );
+    // ---- ENTER (com ou sem modificador) ----
     // A linha acumulada e o que o Enter vai executar. Qualquer enter conta
-    // (shift+enter tambem executa em varios terminais). O TAB completa o
-    // comando: a linha tambem precisa estar limpa antes de completar.
-    const completaPrompt = principal === "enter" || principal === "tab";
+    // (shift+enter tambem executa em varios terminais).
+    // v1.18.0: o TAB nao e mais permitido — no shell ele COMPLETA o
+    // comando e a trava nunca veria o resultado (o Enter validaria o
+    // buffer antigo, nao a linha expandida).
+    if (principal === "tab")
+      throw new Error(
+        "TAB é BLOQUEADO: no shell ele completa o comando e a trava não " +
+          "veria o resultado da completion. Digite o caminho completo."
+      );
+    const completaPrompt = principal === "enter";
     if (completaPrompt) {
+      // o Enter executa a LINHA INTEIRA (com o cursor no meio, o shell
+      // le a linha toda) — entao a trava valida a linha completa. O cursor
+      // modelado serve para o buffer refletir onde o texto foi inserido.
       const linha = linhaAtual();
       const perigo = validarLinhaDigitada(linha);
       if (perigo)
@@ -3422,9 +3738,21 @@ async function executarTeclado(op, opts) {
     // Enter COM modificador (shift+enter) tambem executa em varios terminais
     // — por isso ele tambem limpa a linha depois de validado.
     if (principal === "enter") bufferLimpa();
-    // backspace remove o ultimo caractere; delete (avanco) NAO mexe no
-    // buffer — apagar para frente nao muda o que ja foi digitado
-    else if (principal === "backspace") bufferLinha = bufferLinha.slice(0, -1);
+    // backspace remove o caractere ANTES do cursor; delete (avanco) remove
+    // o DEPOIS — o modelo continua fiel ao prompt
+    else if (principal === "backspace") {
+      if (bufferCursor > 0) {
+        bufferLinha = bufferLinha.slice(0, bufferCursor - 1) + bufferLinha.slice(bufferCursor);
+        bufferCursor--;
+      }
+    } else if (principal === "delete") {
+      if (bufferCursor < bufferLinha.length)
+        bufferLinha = bufferLinha.slice(0, bufferCursor) + bufferLinha.slice(bufferCursor + 1);
+    } else if (["home", "end", "left", "right"].includes(principal)) {
+      // v1.18.0: sem isso o cursor real e o modelo divergiam (a IA
+      // inseria texto no inicio da linha e a trava validava a string errada)
+      bufferMoveCursor(principal);
+    }
   }
 
   const resp = Object.assign({ acao: op, plataforma: plataforma }, r);
@@ -3434,6 +3762,17 @@ async function executarTeclado(op, opts) {
   }
   resp.linhaAtual = linhaAtual().slice(0, 200);
   return resp;
+}
+
+// v1.18.0: screenshot e mouse tambem entram no log de auditoria. Antes a
+// IA podia capturar a tela do usuario (senha do banco, email aberto) e
+// clicar em qualquer coisa sem NENHUM rastro em ponte-log.jsonl.
+function auditarTelaMouse(acao, detalhe) {
+  try {
+    audit({ action: acao, resumo: detalhe });
+  } catch (_) {
+    /* a auditoria nunca derruba a acao */
+  }
 }
 
 // ---------------------------------------------------------------- ações (whitelist fixa)
@@ -3734,6 +4073,17 @@ const ACTIONS = {
           audit({ action: "undo", erro: "entrada pulada (alvo sumiu): " + entry.resumo });
           continue;
         }
+        // v1.18.0: valida o ESCOPO dos dois lados. O log e protegido para
+        // as acoes de arquivo, mas o run_command escreve nele — sem isso,
+        // a IA forjava uma entrada no log e trazia um arquivo de FORA do
+        // escopo para dentro (e lia o conteudo).
+        try {
+          assertAllowed(u.to);
+          assertAllowed(u.from);
+        } catch (e) {
+          audit({ action: "undo", erro: "entrada fora do escopo ignorada: " + entry.resumo });
+          continue;
+        }
         const dest = moveItem(u.to, u.from);
         audit({ action: "undo", resumo: "reverteu: " + entry.resumo });
         return { revertido: entry.action, para: dest };
@@ -3743,6 +4093,14 @@ const ACTIONS = {
         const detalhes = [];
         for (const m of u.moves.slice().reverse()) {
           if (fs.existsSync(m.to)) {
+            // v1.18.0: valida o escopo (o log pode ser envenenado pelo
+            // run_command) — fora do escopo, a entrada e ignorada
+            try {
+              assertAllowed(m.to);
+              assertAllowed(m.from);
+            } catch (_) {
+              continue;
+            }
             detalhes.push(moveItem(m.to, m.from));
             n++;
           }
@@ -3756,6 +4114,13 @@ const ACTIONS = {
         return { revertido: entry.action, restaurado: dest };
       }
       if (u.kind === "create" && fs.existsSync(u.path)) {
+        // v1.18.0: valida o escopo (log envenenado pelo run_command)
+        try {
+          assertAllowed(u.path);
+        } catch (_) {
+          audit({ action: "undo", erro: "entrada fora do escopo ignorada: " + entry.resumo });
+          continue;
+        }
         const { trashName } = trashMove(u.path);
         audit({ action: "undo", resumo: "removeu arquivo criado: " + u.path });
         return { revertido: entry.action, lixeira: trashName };
@@ -4060,8 +4425,25 @@ const ACTIONS = {
     const cmdline = String(args.command == null ? "" : args.command).trim();
     if (!cmdline) throw new Error("Comando vazio");
     if (cmdline.length > 4000) throw new Error("Comando grande demais (limite 4000 caracteres)");
+    // v1.18.0: o cwd tem que estar dentro do escopo. Antes, "cwd":"../../.."
+    // resolvia para "/" e o comando rodava fora da sua home.
     const cwd = args.cwd ? path.resolve(cfg.home, String(args.cwd)) : cfg.home;
+    const homeRes = path.resolve(cfg.home);
+    if (cwd !== homeRes && !cwd.startsWith(homeRes + path.sep))
+      throw new Error("cwd fora do escopo: só posso rodar dentro de " + homeRes);
     const timeoutMin = Math.min(30, Number(args.timeoutMin) || 3);
+
+    // ---- v1.18.0: o run_command nao pode LER os segredos do agente ----
+    // A config (com o token da ponte) e o log (com o historico) sao
+    // protegidos para as acoes de arquivo, mas o run_command roda no shell
+    // e burlava essa protecao: "cat ~/ponte-agent/ponte.config.json"
+    // devolvia o token. Agora o proprio comando e recusado.
+    if (/\b(?:cat|head|tail|less|more|sed|grep|awk|strings|nl|cut|tac|xxd|od|base64|cp|install|rsync|tar|dd)\b[^|;&]*\b(?:ponte\.config\.json|ponte-log\.jsonl|skill-manifest\.json)\b/i.test(cmdline))
+      throw new Error(
+        "BLOQUEADO: o run_command nao pode ler os arquivos internos do agente " +
+          "(config com o token, log de auditoria, manifesto da skill). " +
+          "Use as acoes de arquivo em vez disso."
+      );
 
     // ---- modo autônomo/modo deus: executa direto, exceto padrões catastróficos
     if (cfg.auto || cfg.godMode) {

@@ -590,6 +590,11 @@ async function cmdUpdate(args) {
     if (aResp.status !== 200) throw new Error("HTTP " + aResp.status + " ao baixar o agent.js");
     const mAg = aResp.texto.match(/const VERSION = "([\d.]+)"/);
     resultado.agente.para = mAg ? mAg[1] : null;
+    if (!mAg)
+      throw new Error(
+        "o agent.js baixado nao tem a linha VERSION — parece nao ser o agente " +
+          "do ponte-local (o update foi cancelado, nada foi trocado)"
+      );
 
     const versaoSkillLocal = instalado && instalado.versao ? String(instalado.versao) : null;
     const skillNova = versaoSkillLocal !== String(manifesto.versao);
@@ -749,13 +754,25 @@ async function main() {
 
   // --- ATUALIZAÇÃO (lado do usuário) -----------------------------------
   if (primeiro === "update" || primeiro === "--update" || primeiro === "atualizar") {
-    await cmdUpdate(argv.slice(1));
+    const r = await cmdUpdate(argv.slice(1));
+    // v1.18.0: o update SEMPRE saia com codigo 0 — em automacao
+    // ("npx ponte-local update && ...") uma atualizacao que falhou
+    // reportava sucesso.
+    if (r && r.erro) process.exit(1);
+    if (!r || !r.atualizou) process.exit(2);
     return;
   }
 
   // --- MODO USUÁRIO (host): sobe o agente ------------------------------
   // sem subcomando = start (compatibilidade com quem já usa `npx ponte-local`)
-  const ehStart = primeiro === "start" || primeiro === "--host" || primeiro === undefined;
+  // v1.18.0: "npx ponte-local --server URL --token TOK --save" (a forma que
+  // o proprio agente imprime no erro e que o rodar.sh usa) caia em
+  // "subcomando desconhecido". Flags no primeiro argv = start.
+  const ehStart =
+    primeiro === "start" ||
+    primeiro === "--host" ||
+    primeiro === undefined ||
+    (typeof primeiro === "string" && primeiro.startsWith("--"));
   if (!ehStart) {
     console.error('[x] Subcomando desconhecido: "' + primeiro + '"');
     console.error("");
@@ -767,7 +784,12 @@ async function main() {
     process.exit(1);
   }
 
-  const args = ehStart && primeiro !== undefined ? argv.slice(1) : argv;
+  // se o primeiro argv e um subcomando (start/--host), o resto sao os args;
+  // se o primeiro argv e flag, TODOS os argv sao os args do start
+  const args =
+    ehStart && primeiro !== undefined && !String(primeiro).startsWith("--")
+      ? argv.slice(1)
+      : argv;
 
   if (!existeAgente()) {
     console.error("[x] O agente não foi encontrado em " + AGENT_FILE);
@@ -783,7 +805,10 @@ async function main() {
 
   console.log(SELO_USUARIO());
 
-  const temServer = cli.server || cfg.server || process.env.PONTE_AGENT_TOKEN;
+  // v1.18.0: o fallback do SERVER era o PONTE_AGENT_TOKEN (copy-paste) —
+  // com so o token no ambiente, o wizard era pulado e o agente subia sem
+  // servidor nenhum.
+  const temServer = cli.server || cfg.server;
   const temToken = cli.token || cfg.token || process.env.PONTE_AGENT_TOKEN;
   if (!temServer || !temToken) {
     if (!process.stdin.isTTY) {
@@ -795,7 +820,7 @@ async function main() {
     await primeiroBoot(cli);
   } else if (cli.save) {
     gravarConfig({
-      server: String(cli.server || cfg.server).replace(/\/+$/, ""),
+      server: String(cli.server === true ? cfg.server || "" : cli.server || cfg.server || "").replace(/\/+$/, ""),
       token: String(cli.token || cfg.token || process.env.PONTE_AGENT_TOKEN),
       home: cli.home || cfg.home || os.homedir(),
       run: !!(cli.auto || cli["allow-run"] || cfg.run),
