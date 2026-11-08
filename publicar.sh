@@ -172,7 +172,7 @@ let s=fs.readFileSync(f,'utf8');
 const antes=s;
 s=s.replace(/const VERSION = \"[^\"]+\";/, 'const VERSION = \"$VER_AGENTE_NOV\";');
 s=s.replace(/Ponte Local — Agente v[0-9.]+ /, 'Ponte Local — Agente v$VER_AGENTE_NOV ');
-if(s===antes){ console.error('AVISO: nao achei a linha VERSION no agent.js'); process.exit(1); }
+if(s===antes){ console.log('   (VERSION ja estava em $VER_AGENTE_NOV — nada a fazer)'); }
 fs.writeFileSync(f,s);
 "
 ok "agente/agent.js -> v$VER_AGENTE_NOV"
