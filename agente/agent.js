@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.18.0 (Windows + Linux + macOS + Termux)
+ * Ponte Local — Agente v1.19.0 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -95,6 +95,14 @@
  *    tambem pode forcar: npx ponte-local update (baixa o agente novo + o
  *    pacote da skill). O usuario e o agente sao avisados, de forma simples,
  *    sempre que a skill muda.
+ *  - Auto-update do AGENTE (v1.19.0): a skill ja se atualizava sozinha,
+ *    mas o agent.js nao. Agora sim, e do mesmo jeito em TODAS as plataformas:
+ *    e Node puro (sem shell, sem bash, sem curl). O agente checa a cada
+ *    30 min, baixa a versao nova, valida com "node --check" e a PREPARA
+ *    (agent.novo.js); no proximo boot ela entra em vigor, com backup do
+ *    anterior. O agente nao se troca em execucao (seria perigoso): deixa
+ *    pronto e avisa para reiniciar. Se voce roda do cache do npx, o
+ *    proprio npx ja resolve a versao nova do npm.
  *  - Segurança v1.11.0 (audit com subagentes + skills security-review/
  *    security-and-hardening): trava anticatástrofe cobre && no meio do
  *    comando, flags com hífen interno (--no-preserve-root), find -delete,
@@ -116,7 +124,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.18.0";
+const VERSION = "1.19.0";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -157,6 +165,27 @@ const SKILL_MANIFEST_URL = SKILL_REPO_BASE + "skill-manifest.json";
 const SKILL_FILE = path.join(DATA_DIR, "SKILL.md");
 const SKILL_MANIFEST_LOCAL = path.join(DATA_DIR, "skill-manifest.json");
 const SKILL_DIR = path.join(DATA_DIR, "skill");
+
+// ---- auto-update do AGENTE (v1.19.0) --------------------------------
+// A skill se atualiza sozinha; o agent.js NAO se atualizava. Agora sim, e
+// do mesmo jeito em TODAS as plataformas: e Node puro (sem shell, sem
+// bash, sem curl), entao funciona igual no Linux (qualquer distro),
+// Windows, macOS e Termux.
+//
+// Fluxo:
+//   1. de tempos em tempos o agente checa se ha versao nova no repo
+//   2. baixa, valida com "node --check" e PREPARA como agent.js.novo
+//   3. no proximo boot o agente novo entra (com backup do anterior)
+// O agente NAO se troca enquanto roda (trocar o arquivo em execucao
+// seria perigoso): ele deixa o novo pronto e avisa para reiniciar.
+const AGENT_URL = SKILL_REPO_BASE + "agente/agent.js";
+// o nome precisa terminar em .js: o node --check (usado para validar o
+// download) aborta com ERR_UNKNOWN_FILE_EXTENSION em qualquer outra extensao
+const AGENT_NOVO = path.join(DATA_DIR, "agent.novo.js");
+const AGENT_CHECK_MS = 30 * 60 * 1000; // checa a cada 30 min
+// rodando do cache do npx? entao o proprio npx ja resolve a versao nova
+// do npm — trocar o arquivo de la seria inutil (o cache e efemero)
+const EH_CACHE_NPX = /[/\\]\.npm[/\\]_npx[/\\]/.test(SCRIPT_DIR);
 const SKILL_CHECK_MS = 60 * 1000; // no boot + a cada 60 s
 const SKILL_BACKOFF_MAX_MS = 15 * 60 * 1000; // teto do backoff em falhas seguidas
 
@@ -2145,6 +2174,142 @@ function skillAutoUpdateLoop() {
   atualizarSkill("boot")
     .catch(() => {})
     .then(() => skillAgendaProxima());
+}
+
+// ------------------------------------------------------- auto-update do agente
+// extrai a versao de um agent.js (a linha "const VERSION = ...")
+function versaoDoAgentJs(texto) {
+  const m = String(texto || "").match(/const VERSION = "([\d.]+)"/);
+  return m ? m[1] : null;
+}
+
+// valida com o PROPRIO node do processo (process.execPath) — nao depende
+// de "node" no PATH e funciona em qualquer sistema operacional
+function validarAgentJs(caminho) {
+  return new Promise((resolve) => {
+    try {
+      execFile(process.execPath, ["--check", caminho], { timeout: 20000, windowsHide: true }, (err) =>
+        resolve(!err)
+      );
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
+// checa se ha versao nova e PREPARA (agent.js.novo). nao troca nada agora.
+async function prepararAgenteNovo() {
+  const r = { atualizou: false, erro: null, versao: null };
+  try {
+    const resp = await httpsGetTexto(AGENT_URL, 0, null);
+    if (resp.status !== 200) {
+      r.erro = "HTTP " + resp.status;
+      return r;
+    }
+    const nova = versaoDoAgentJs(resp.texto);
+    if (!nova) {
+      r.erro = "agent.js remoto sem marcador de versao";
+      return r;
+    }
+    r.versao = nova;
+    const atual = VERSION.split(".").map(Number);
+    if (!versaoMaisNova(nova.split(".").map(Number), atual)) return r; // ja na ultima
+    // grava num .tmp e valida ANTES de deixar pronto
+    // o nome PRECISA terminar em .js: o node --check aborta com
+    // ERR_UNKNOWN_FILE_EXTENSION em qualquer outra extensao (o mesmo bug que
+    // quebrava o atualizar.sh)
+    const tmp = path.join(DATA_DIR, "agent-download-" + process.pid + ".js");
+    fs.writeFileSync(tmp, resp.texto, "utf8");
+    const ok = await validarAgentJs(tmp);
+    if (!ok) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch (_) {}
+      r.erro = "agent.js remoto invalido (node --check falhou) — nada foi preparado";
+      return r;
+    }
+    try {
+      fs.renameSync(tmp, AGENT_NOVO);
+    } catch (_) {
+      fs.writeFileSync(AGENT_NOVO, resp.texto);
+      try {
+        fs.unlinkSync(tmp);
+      } catch (_) {}
+    }
+    r.atualizou = true;
+    audit({ action: "agent_update", resumo: "agente v" + VERSION + " → v" + nova + " preparado" });
+  } catch (e) {
+    r.erro = e.message;
+  }
+  return r;
+}
+
+// no boot: se ha agente novo preparado, entra em vigor (com backup)
+async function aplicarAgentePreparado() {
+  if (!fs.existsSync(AGENT_NOVO)) return null;
+  try {
+    const texto = fs.readFileSync(AGENT_NOVO, "utf8");
+    const v = versaoDoAgentJs(texto);
+    if (!v || !versaoMaisNova(v.split(".").map(Number), VERSION.split(".").map(Number))) {
+      try {
+        fs.unlinkSync(AGENT_NOVO);
+      } catch (_) {}
+      return null;
+    }
+    const ok = await validarAgentJs(AGENT_NOVO);
+    if (!ok) {
+      try {
+        fs.unlinkSync(AGENT_NOVO);
+      } catch (_) {}
+      log("A versao nova do agente foi descartada (invalida). A atual segue.");
+      return null;
+    }
+    if (EH_CACHE_NPX) {
+      // rodando do cache do npx: o proprio npx ja resolve a versao nova
+      // do npm na proxima execucao — trocar o cache seria inutil
+      try {
+        fs.unlinkSync(AGENT_NOVO);
+      } catch (_) {}
+      log("Ha agente novo (v" + v + "), mas voce esta rodando do cache do npx — a proxima execucao ja pega a versao nova do npm.");
+      return null;
+    }
+    // backup do que esta rodando e troca
+    const alvos = new Set([path.join(SCRIPT_DIR, "agent.js"), path.join(DATA_DIR, "agent.js")]);
+    for (const alvo of alvos) {
+      try {
+        if (!fs.existsSync(alvo)) continue;
+        fs.copyFileSync(alvo, alvo + ".bak");
+        fs.copyFileSync(AGENT_NOVO, alvo);
+      } catch (_) {
+        /* sem permissao nesse caminho: o outro pode ter dado certo */
+      }
+    }
+    try {
+      fs.unlinkSync(AGENT_NOVO);
+    } catch (_) {}
+    log("Agente atualizado para v" + v + " — reinicie o agente para usar a versao nova.");
+    audit({ action: "agent_update", resumo: "agente v" + VERSION + " → v" + v + " aplicado" });
+    return v;
+  } catch (_) {
+    return null;
+  }
+}
+
+// agenda: checa periodicamente (30 min) se ha versao nova
+function agenteAgendaProxima() {
+  const t = setTimeout(async () => {
+    const r = await prepararAgenteNovo().catch(() => null);
+    if (r && r.atualizou) {
+      console.log("");
+      console.log("  ┌──────────────────────────────────────────────┐");
+      console.log("  │  Nova versao do agente: v" + r.versao + "                │");
+      console.log("  └──────────────────────────────────────────────┘");
+      console.log("    Baixada e validada. Reinicie o agente para usar.");
+      console.log("");
+    }
+    agenteAgendaProxima();
+  }, AGENT_CHECK_MS);
+  if (t.unref) t.unref();
 }
 
 function salvarGodMode(on) {
@@ -5118,6 +5283,24 @@ async function main() {
 
   fecharRelatorioAnterior();
   skillAutoUpdateLoop();          // baixa a SKILL.md agora e a cada 60 s
+
+  // auto-update do agente: se ja havia um agent.js novo preparado (de uma
+  // checagem anterior), ele entra em vigor agora — com backup do anterior.
+  await aplicarAgentePreparado().catch(() => null);
+  // e a checagem periodica (a cada 30 min) deixa a proxima versao pronta
+  prepararAgenteNovo()
+    .then((r) => {
+      if (r && r.atualizou) {
+        console.log("");
+        console.log("  ┌──────────────────────────────────────────────┐");
+        console.log("  │  Nova versao do agente: v" + r.versao + "                │");
+        console.log("  └──────────────────────────────────────────────┘");
+        console.log("    Baixada e validada. Reinicie o agente para usar.");
+        console.log("");
+      }
+      agenteAgendaProxima();
+    })
+    .catch(() => agenteAgendaProxima());
 
   let errosSeguidos = 0;
   let avisosToken = 0;

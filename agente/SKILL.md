@@ -454,6 +454,23 @@ Não existe página de configuração — nenhuma etapa de instalação ou opera
 depende de interface — nunca mande ninguém "pegar o token numa página": quem
 preenche é você.
 
+## O agente se atualiza sozinho
+
+A cada 30 min o agente checa se há versão nova do `agent.js` no repo, baixa,
+valida com `node --check` e deixa pronta (`agent.novo.js`). No **próximo
+boot** ela entra em vigor, com o anterior guardado como `agent.js.bak`. O
+agente não se troca em execução — avisa para reiniciar:
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Nova versao do agente: v1.19.0              │
+  └──────────────────────────────────────────────┘
+    Baixada e validada. Reinicie o agente para usar.
+```
+
+Node puro: igual no Linux (qualquer distro), Windows, macOS e Termux. Do
+cache do `npx`, o próprio `npx` já resolve a versão nova do npm.
+
 ## Qual comando é o seu (a variante dentro da máquina)
 
 O pacote `ponte-local` é híbrido e tem **dois comandos**. Dentro da pasta do

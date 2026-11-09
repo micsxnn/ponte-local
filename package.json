@@ -37,7 +37,8 @@
     "NOTICE.md",
     "SECURITY.md",
     "SKILL.md",
-    "skill-manifest.json"
+    "skill-manifest.json",
+    "agente/atualizar.bat"
   ],
   "scripts": {
     "test": "node agente/teste-trava.cjs",

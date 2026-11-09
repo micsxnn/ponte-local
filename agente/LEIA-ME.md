@@ -235,7 +235,23 @@ com `undo_last`, e tudo registrado em `ponte-log.jsonl`.
   ou você edita o `ponte.config.json`. Desligado, o `run_command` volta ao
   modo anterior (supervisionado volta a pedir `s/N`).
 
-## A skill se atualiza sozinha (e é um pacote inteiro)
+## O agente e a skill se atualizam sozinhos
+
+O **agent.js** também se atualiza: a cada 30 min o agente checa se há versão
+nova no repo, baixa, valida com `node --check` e a deixa pronta. No **próximo
+boot** ela entra em vigor (o anterior fica como `agent.js.bak`).
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Nova versao do agente: v1.19.0              │
+  └──────────────────────────────────────────────┘
+    Baixada e validada. Reinicie o agente para usar.
+```
+
+É Node puro — funciona igual no Linux, Windows, macOS e Termux. Se você
+instalou com `npx`, o próprio `npx` já pega a versão nova do npm.
+
+### A skill se atualiza sozinha (e é um pacote inteiro)
 
 A skill é um **pacote** de arquivos, não um `.md` solto: a spec principal, a
 variante "dentro da máquina", o manual e os recursos novos. O repo publica

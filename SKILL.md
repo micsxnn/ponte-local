@@ -17,7 +17,7 @@ description: >-
   hospedar nada.
 ---
 
-<!-- skill-version: 4.5.0 -->
+<!-- skill-version: 4.6.0 -->
 
 # Ponte Local — operação remota do PC do usuário
 
@@ -485,7 +485,9 @@ voltar com "Não consegui capturar a tela" (ferramenta ausente), a IA **DEVE**:
 Ofereça caminho sem print: "se preferir não instalar nada, eu sigo sem
 tirar print — funciona igual".
 
-### A skill se atualiza sozinha (pacote inteiro, não só um arquivo)
+### O agente e a skill se atualizam sozinhos
+
+**A skill** (pacote inteiro, não só um arquivo)
 
 A skill é um **PACOTE** de arquivos, não um `.md` solto. O repo publica um
 **manifesto** (`skill-manifest.json`) que lista tudo o que deve estar na
@@ -516,6 +518,24 @@ de manifesto):
 
 **Quando o usuário dispara `skill_update` pela IA**, a resposta traz a
 versão antiga, a nova e a lista de arquivos que entraram/saíram.
+
+**O `agent.js` também se atualiza sozinho** (v1.19.0): a cada 30 min o agente
+checa se há versão nova no repo, baixa, valida com `node --check` e a deixa
+pronta (`agent.novo.js`). No **próximo boot** ela entra em vigor, com o
+arquivo anterior guardado como `agent.js.bak`. O agente não se troca em
+execução (seria perigoso) — ele avisa no terminal:
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Nova versao do agente: v1.19.0              │
+  └──────────────────────────────────────────────┘
+    Baixada e validada. Reinicie o agente para usar.
+```
+
+Tudo isso é **Node puro** (sem shell, sem `bash`, sem `curl`), então funciona
+igual no Linux (qualquer distro), no Windows, no macOS e no Termux. Se o
+usuário estiver rodando do cache do `npx`, o próprio `npx` já resolve a versão
+nova do npm — o agente avisa e não mexe no cache.
 
 ### Digitar no teclado — o agente PRECISA ENSINAR o usuário a instalar
 
@@ -991,7 +1011,12 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
   `--save` regrava a config sozinho.
 - **Atualizar o agente (instalação `npx`):** é automático — o `npx` resolve
   a versão mais nova do pacote a cada execução. Se o usuário quiser fixar:
-  `npx ponte-local start@1.14.0 ...`.
+  `npx ponte-local start@1.19.0 ...`.
+- **Atualizar o agent.js na máquina (sem npm):** automático — o próprio agente
+  checa a cada 30 min, baixa a versão nova, valida com `node --check` e a
+  aplica no próximo boot (backup em `agent.js.bak`). Manual, se precisar:
+  `bash agente/atualizar.sh` (Linux/macOS/Termux) ou
+  `agente\atualizar.bat` (Windows).
 - **Atualizar o agente (instalação manual):** baixe o `agente/agent.js` novo
   do repo, envie ao PC com `write_binary` para `~/Downloads/` (ou
   `C:\Users\u\Downloads`), e lá:

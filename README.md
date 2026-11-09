@@ -175,6 +175,44 @@ sudo dnf install ImageMagick xdotool  # Fedora
 > **X11** e no **Windows** a janela pedida (por `window_title`, `window_class`
 > ou `window_id`) é capturada exatamente.
 
+### Atualização automática (funciona em todas as plataformas)
+
+O agente se atualiza sozinho, e do **mesmo jeito** no Linux (qualquer distro),
+no Windows, no macOS e no Termux — porque tudo é **Node puro** (sem shell, sem
+`bash`, sem `curl`):
+
+| O que se atualiza | Como | Quando |
+|---|---|---|
+| **A skill** (spec, variante da máquina, manual, recursos) | o próprio agente baixa do repo | sozinho, no boot e a cada 60 s |
+| **O `agent.js`** | o próprio agente baixa, valida com `node --check` e prepara | sozinho, a cada 30 min; entra em vigor no **próximo boot** |
+
+O agente **não se troca enquanto roda** (trocar o arquivo em execução seria
+perigoso): ele baixa a versão nova, valida, deixa pronta como `agent.novo.js` e
+avisa no terminal:
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Nova versao do agente: v1.19.0              │
+  └──────────────────────────────────────────────┘
+    Baixada e validada. Reinicie o agente para usar.
+```
+
+No próximo boot a versão nova entra em vigor, com o arquivo anterior guardado
+como `agent.js.bak`.
+
+**Rodando do cache do `npx`?** O `npx` já resolve a versão mais nova do npm a
+cada execução — o agente avisa isso e não mexer no cache (que é efêmero).
+
+**Forçar na hora** (skill + agente, qualquer plataforma):
+
+```bash
+npx ponte-local update
+```
+
+**Instalação manual** (sem npm): no Linux/macOS/Termux, `bash agente/atualizar.sh`;
+no Windows, `agente\atualizar.bat`. Os dois validam o download com
+`node --check` e só então trocam.
+
 ### Só para as ações de teclado
 
 As ações de teclado (`keyboard_type`, `keyboard_key`) também são **zero
@@ -506,7 +544,8 @@ ponte-local/
 
 | Componente | Versão | O que trouxe |
 |------------|--------|--------------|
-| Agente | **v1.18.0** (atual) | Auditoria de seguranca: **17 bypasses da trava anticatastrofe fechados** (glob no `rm`, `mv` destrutivo, `sudo` com flags, shell dentro de shell, `eval`, interpretadores com codigo inline, leitura de credenciais, alvos de sistema que faltavam, atalhos do Windows) + **9 bugs de corretude** (comando perdido no relay, comando executado duas vezes, token vazando no `run_command`, `search` lendo `.env`, `npx --server` quebrado, `atualizar.sh` que nunca atualizava) |
+| Agente | **v1.19.0** (atual) | Auto-update do **agente** (o `agent.js` agora se atualiza sozinho, como a skill): checa a cada 30 min, baixa, valida com `node --check` e prepara a versão nova — que entra no próximo boot, com backup. Node puro, funciona igual no Linux (qualquer distro), Windows, macOS e Termux. Novo `agente/atualizar.bat` (o Windows não tinha caminho manual) |
+| Agente | v1.18.0 | Auditoria de seguranca: **17 bypasses da trava anticatastrofe fechados** (glob no `rm`, `mv` destrutivo, `sudo` com flags, shell dentro de shell, `eval`, interpretadores com codigo inline, leitura de credenciais, alvos de sistema que faltavam, atalhos do Windows) + **9 bugs de corretude** (comando perdido no relay, comando executado duas vezes, token vazando no `run_command`, `search` lendo `.env`, `npx --server` quebrado, `atualizar.sh` que nunca atualizava) |
 | Agente | v1.17.0 | Skill como **pacote inteiro**: um manifesto no repo lista tudo o que deve estar na máquina (spec, variante da máquina, manual e recursos novos). O agente baixa o pacote inteiro sozinho, no boot e a cada 60 s; `npx ponte-local update` faz o mesmo lado do usuário e também traz o `agent.js` novo. Arquivo novo da skill chega sem mudar código; o que sai da skill nova é removido |
 | Agente | v1.16.0 | `keyboard_type` (digita texto) e `keyboard_key` (dispara atalhos): a IA mexe no teclado do usuário (Windows/Linux/macOS/Termux, zero dependência npm). O texto digitado passa pela mesma trava anticatástrofe do `run_command`; colar (ctrl+v) e atalhos destrutivos são bloqueados |
 | Agente | v1.14.0 | `mouse_position`, `mouse_move`, `mouse_click`, `mouse_scroll` e `mouse_drag`: a IA mexe no cursor do usuário (Windows/Linux/macOS/Termux, zero dependência npm). No X11 usa `xdotool`; no Wayland, `ydotool`/`dotool` (o `xdotool` mexe só no cursor do XWayland — a resposta avisa) |
