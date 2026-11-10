@@ -1594,12 +1594,48 @@ const BASH = [
   "/data/data/com.termux/files/usr/bin/bash",
 ].find((p) => p && fs.existsSync(p)) || "bash";
 
+// v1.20.0: o comando em execucao, para a acao command_stop poder PARAR
+// o que travou (build infinito, servidor que nao volta, script esperando
+// input). Guarda o child e o comando, para o agente responder o que parou.
+let comandoEmExecucao = null; // { child, cmdline, cwd, inicio, pid }
+
+// v1.20.0: o muro do PowerShell. No Windows, um .ps1 assinado/nao liberado
+// morre com "running scripts is disabled on this system" (a ExecutionPolicy
+// padrao e Restricted). A IA via aquilo e achava que faltava instalar o
+// Node — a dica abaixo diz o que fazer de verdade.
+function ehErroExecutionPolicy(texto) {
+  const t = String(texto || "");
+  if (!t) return false;
+  // assinatura mais explicita do Windows
+  if (/running scripts is disabled on this system/i.test(t)) return true;
+  if (/PSSecurityException/i.test(t)) return true;
+  if (/UnauthorizedAccess[\s\S]{0,200}execution policy/i.test(t)) return true;
+  // "ExecutionPolicy" + um sintoma de bloqueio no mesmo texto
+  if (/execution\s*policy/i.test(t) && /(not digitally signed|cannot be loaded|desabilit|bloquead|is disabled|nao pode ser carregado)/i.test(t))
+    return true;
+  return false;
+}
+
+function dicaExecutionPolicy() {
+  return (
+    "O PowerShell bloqueou o script pela ExecutionPolicy (nao falta Node nem PATH). " +
+    "Rode com: powershell -ExecutionPolicy Bypass -File <arquivo.ps1> " +
+    "ou libere o arquivo com: Unblock-File <arquivo.ps1>. " +
+    "Para ver a politica: Get-ExecutionPolicy -List"
+  );
+}
+
 function executarComando(cmdline, cwd, timeoutMin) {
   const t0 = Date.now();
   const win = process.platform === "win32";
   return new Promise((resolve) => {
     let timerGrupo = null; // limpo no fim natural; no timeout é que ele DEVE disparar
+    let child = null; // declarado ANTES de 'fim' (o callback le 'child')
     const fim = (err, stdout, stderr) => {
+      // v1.20.0: o comando acabou — limpa o registro (command_stop nao tem
+      // mais o que parar)
+      if (comandoEmExecucao && (!comandoEmExecucao.child || comandoEmExecucao.child === child))
+        comandoEmExecucao = null;
       const morto = !!(err && err.killed);
       if (!morto && timerGrupo) {
         clearTimeout(timerGrupo);
@@ -1623,7 +1659,6 @@ function executarComando(cmdline, cwd, timeoutMin) {
       windowsHide: true,
       detached: !win, // líder de grupo no POSIX: dá pra matar os NETOS também
     };
-    let child = null;
     // mata o GRUPO inteiro no timeout (v1.11.0 — o kill padrão do exec só
     // acerta o shell; "servidor &" e netos ficavam órfãos rodando)
     const matarGrupo = () => {
@@ -1645,6 +1680,14 @@ function executarComando(cmdline, cwd, timeoutMin) {
       // herdado (sudo -S precisa).
       child = execFile(BASH, ["-c", cmdline], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
     }
+    // v1.20.0: registra o comando vivo para a acao command_stop
+    comandoEmExecucao = {
+      child: child,
+      cmdline: cmdline,
+      cwd: cwd,
+      inicio: Date.now(),
+      pid: child && child.pid ? child.pid : null,
+    };
     if (child && typeof child.on === "function") {
       child.on("spawn", () => {
         timerGrupo = setTimeout(matarGrupo, timeoutMin * 60000 + 500);
@@ -4663,6 +4706,14 @@ const ACTIONS = {
       await spinnerGaranteMinimo();
       spinnerFim();
       mostraOutput(out);
+      // v1.20.0: se o comando morreu no muro da ExecutionPolicy do PowerShell,
+      // a IA recebe a explicacao pronta (senao ela acha que falta instalar
+      // o Node e manda o usuario instalar de novo)
+      const dicaExec =
+        out.code !== 0 && ehErroExecutionPolicy(out.stderr + " " + out.stdout)
+          ? dicaExecutionPolicy()
+          : null;
+      if (dicaExec) log("DICA: " + dicaExec);
       audit({
         action: "run_command",
         modo: cfg.auto ? "auto" : "deus",
@@ -4701,6 +4752,12 @@ const ACTIONS = {
     await spinnerGaranteMinimo();
     spinnerFim();
     mostraOutput(out);
+    // v1.20.0: mesma dica da ExecutionPolicy no ramo supervisionado
+    const dicaExecSup =
+      out.code !== 0 && ehErroExecutionPolicy(out.stderr + " " + out.stdout)
+        ? dicaExecutionPolicy()
+        : null;
+    if (dicaExecSup) log("DICA: " + dicaExecSup);
     audit({ action: "run_command", resumo: cmdline.slice(0, 200), exitCode: out.code, ms: out.ms });
     return {
       comando: cmdline,
@@ -4710,6 +4767,56 @@ const ACTIONS = {
       ms: out.ms,
       stdout: corta150k(out.stdout),
       stderr: corta150k(out.stderr),
+    };
+  },
+  command_stop: async () => {
+    // v1.20.0: para o comando que esta rodando (build infinito, servidor
+    // que nao volta, script esperando input). Mata o PROCESSO INTEIRO:
+    // no POSIX, o grupo (filhos e netos); no Windows, a arvore (taskkill /T).
+    if (!comandoEmExecucao || !comandoEmExecucao.child) {
+      audit({ action: "command_stop", resumo: "nenhum comando em execucao" });
+      return {
+        parou: false,
+        motivo: "nenhum comando em execucao",
+        dica: "o comando ja terminou (ou nunca houve um)",
+      };
+    }
+    const info = {
+      cmdline: comandoEmExecucao.cmdline,
+      cwd: comandoEmExecucao.cwd,
+      pid: comandoEmExecucao.pid,
+      ms: Date.now() - comandoEmExecucao.inicio,
+    };
+    const child = comandoEmExecucao.child;
+    const win = process.platform === "win32";
+    let matou = false;
+    try {
+      if (win) {
+        // Windows: mata a arvore de processos (filhos inclusos)
+        await new Promise((resolve) => {
+          execFile("taskkill", ["/T", "/F", "/PID", String(child.pid)], { timeout: 15000 }, () => resolve());
+        });
+        matou = true;
+      } else {
+        // POSIX: mata o grupo (o bash e tudo que ele gerou)
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch (_) {
+          child.kill("SIGKILL");
+        }
+        matou = true;
+      }
+    } catch (e) {
+      audit({ action: "command_stop", erro: "falha ao matar: " + e.message });
+      return { parou: false, motivo: "nao consegui matar o processo: " + e.message, ...info };
+    }
+    comandoEmExecucao = null;
+    audit({ action: "command_stop", resumo: "parou: " + String(info.cmdline).slice(0, 160) });
+    log("Comando parado: " + String(info.cmdline).slice(0, 100));
+    return {
+      parou: matou,
+      sinal: win ? "taskkill /T /F" : "SIGKILL no grupo de processos",
+      ...info,
     };
   },
   screenshot: async (args) => {
@@ -4859,6 +4966,7 @@ function rotuloAcao(a) {
   // rótulos em linguagem de gente para o resumo automático do relatório
   const rotulos = {
     run_command: "comandos no terminal",
+    command_stop: "paradas de comandos em execução",
     read_text: "leituras de arquivo (texto)",
     read_binary: "leituras de arquivo (binário)",
     file_info: "consultas de metadados de arquivo",
