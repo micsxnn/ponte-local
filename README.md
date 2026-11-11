@@ -682,4 +682,4 @@ Encontrou uma vulnerabilidade? **Não abra issue pública.** Siga a
 
 ## Licença
 
-[MIT](LICENSE) © MicaelSanPedro
+[MIT](LICENSE) © micsxnn
