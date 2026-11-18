@@ -51,8 +51,9 @@ const readline = require("readline");
 // ---- caminhos ABSOLUTOS baseados no pacote (nunca no CWD) --------------
 const PKG_DIR = path.resolve(__dirname, ".."); // raiz do pacote instalado
 const AGENT_FILE = path.join(PKG_DIR, "agente", "agent.js");
-const SKILL_FILE = path.join(PKG_DIR, "SKILL.md"); // skill principal (raiz)
+const SKILL_FILE = path.join(PKG_DIR, "SKILL.md"); // spec de entrada (raiz)
 const SKILL_AGENTE_FILE = path.join(PKG_DIR, "agente", "SKILL.md"); // variante "dentro da máquina"
+const REFS_DIR = path.join(PKG_DIR, "references");
 
 // ---- pasta de DADOS do usuário (persistente, fora do pacote) -----------
 function resolverDataDir() {
@@ -142,6 +143,9 @@ const ALIASES_SECAO = {
   instalacao: "Passo 4",
   instalar: "Passo 4",
   passo4: "Passo 4",
+  teclado: "Digitar no teclado",
+  mouse: "Mexer no mouse",
+  atualizacao: "se atualizam sozinhos",
   relay: "Passo 2",
   url: "Passo 3",
   validar: "Passo 5",
@@ -172,45 +176,62 @@ const ALIASES_SECAO = {
   terminal: "O que o usuário vê no terminal",
 };
 
-function acharSecao(nome) {
-  let md;
+function arquivosMarkdownSkill() {
+  const lista = [SKILL_FILE];
   try {
-    md = fs.readFileSync(SKILL_FILE, "utf8");
-  } catch (_) {
-    return null;
-  }
+    const nomes = fs
+      .readdirSync(REFS_DIR)
+      .filter((n) => n.endsWith(".md"))
+      .sort();
+    for (const nome of nomes) lista.push(path.join(REFS_DIR, nome));
+  } catch (_) {}
+  return lista;
+}
+
+function acharSecao(nome) {
   const alvo = (ALIASES_SECAO[nome] || nome).toLowerCase();
-  const lista = secoes(md);
-  // casa exata primeiro
-  let achada = lista.find((s) => s.titulo.toLowerCase() === alvo);
-  // depois, por conter
-  if (!achada) achada = lista.find((s) => s.titulo.toLowerCase().includes(alvo));
-  if (!achada) return null;
-  // se a seção achada tem subseções (###), pega até a próxima do mesmo nível
-  const idx = lista.indexOf(achada);
-  const bloco = [achada];
-  for (let i = idx + 1; i < lista.length; i++) {
-    if (lista[i].nivel <= achada.nivel) break;
-    bloco.push(lista[i]);
+  for (const arquivo of arquivosMarkdownSkill()) {
+    let md;
+    try {
+      md = fs.readFileSync(arquivo, "utf8");
+    } catch (_) {
+      continue;
+    }
+    const lista = secoes(md);
+    let achada = lista.find((s) => s.titulo.toLowerCase() === alvo);
+    if (!achada) achada = lista.find((s) => s.titulo.toLowerCase().includes(alvo));
+    if (!achada) continue;
+    const idx = lista.indexOf(achada);
+    const bloco = [achada];
+    for (let i = idx + 1; i < lista.length; i++) {
+      if (lista[i].nivel <= achada.nivel) break;
+      bloco.push(lista[i]);
+    }
+    return bloco.map((s) => s.linhas.join("\n")).join("\n");
   }
-  return bloco.map((s) => s.linhas.join("\n")).join("\n");
+  return null;
 }
 
 // a tabela de ações da SKILL.md → lista estruturada
 function tabelaAcoes() {
-  let md;
-  try {
-    md = fs.readFileSync(SKILL_FILE, "utf8");
-  } catch (_) {
-    return [];
-  }
   const acoes = [];
-  for (const linha of md.split("\n")) {
-    const m = linha.match(/^\|\s*`([a-z_]+)`\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*$/);
-    if (!m) continue;
-    const nome = m[1];
-    if (["acao", "args"].includes(nome.toLowerCase())) continue;
-    acoes.push({ acao: nome, args: m[2].replace(/`/g, ""), descricao: m[3] });
+  const vistos = new Set();
+  for (const arquivo of arquivosMarkdownSkill()) {
+    let md;
+    try {
+      md = fs.readFileSync(arquivo, "utf8");
+    } catch (_) {
+      continue;
+    }
+    for (const linha of md.split("\n")) {
+      const m = linha.match(/^\|\s*`([a-z_]+)`\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*$/);
+      if (!m) continue;
+      const nome = m[1];
+      if (["acao", "args"].includes(nome.toLowerCase())) continue;
+      if (vistos.has(nome)) continue;
+      vistos.add(nome);
+      acoes.push({ acao: nome, args: m[2].replace(/`/g, ""), descricao: m[3] });
+    }
   }
   return acoes;
 }
@@ -272,14 +293,27 @@ function imprimirAcoes(filtro, comoJson) {
   console.log("");
 }
 
-function imprimirSkill(argumento, comoJson, forcarLista) {
-  const secoesDisponiveis = [];
-  try {
-    const md = fs.readFileSync(SKILL_FILE, "utf8");
-    for (const s of secoes(md)) {
-      if (s.nivel === 2) secoesDisponiveis.push(s.titulo);
+function secoesNivel2() {
+  const out = [];
+  for (const arquivo of arquivosMarkdownSkill()) {
+    let md;
+    try {
+      md = fs.readFileSync(arquivo, "utf8");
+    } catch (_) {
+      continue;
     }
-  } catch (_) {
+    const rel = path.relative(PKG_DIR, arquivo);
+    for (const s of secoes(md)) {
+      if (s.nivel === 2) out.push({ titulo: s.titulo, arquivo: rel });
+    }
+  }
+  return out;
+}
+
+function imprimirSkill(argumento, comoJson, forcarLista) {
+  const lista = secoesNivel2();
+  const secoesDisponiveis = lista.map((s) => s.titulo);
+  if (!lista.length) {
     console.error("[x] SKILL.md não encontrado no pacote: " + SKILL_FILE);
     process.exit(1);
   }
@@ -287,7 +321,7 @@ function imprimirSkill(argumento, comoJson, forcarLista) {
   if (forcarLista || argumento === "--lista" || argumento === "--list" || argumento === "lista") {
     console.log(SELO_AGENTE());
     console.log("── SEÇÕES DA SKILL ──\n");
-    for (const s of secoesDisponiveis) console.log("  " + s);
+    for (const s of lista) console.log("  " + s.titulo + "   [" + s.arquivo + "]");
     console.log("");
     console.log("Uma seção:  npx ponte-local skill <secao>");
     console.log("Índice completo da skill: https://github.com/micsxnn/ponte-local/blob/main/SKILL.md");
@@ -308,7 +342,7 @@ function imprimirSkill(argumento, comoJson, forcarLista) {
     return;
   }
 
-  // sem argumento → a skill inteira
+  // sem argumento → só a spec de entrada (as seções longas ficam em references/)
   let md;
   try {
     md = fs.readFileSync(SKILL_FILE, "utf8");
@@ -317,7 +351,7 @@ function imprimirSkill(argumento, comoJson, forcarLista) {
     process.exit(1);
   }
   if (comoJson) {
-    console.log(JSON.stringify({ skill: md, secoes: secoesDisponiveis }, null, 2));
+    console.log(JSON.stringify({ skill: md, secoes: secoesDisponiveis, referencias: lista }, null, 2));
     return;
   }
   console.log(SELO_AGENTE());
@@ -443,7 +477,8 @@ Leia qual é o seu antes de rodar.
 │ MODO AGENTE (REMOTO) — roda na VM / servidor da IA          │
 │                                                              │
 │   npx ponte-local skill                                     │
-│       A especificação completa da skill (como operar).      │
+│       A spec de entrada (como operar). Seções longas:       │
+│       skill <secao>.                                        │
 │   npx ponte-local skill <secao>                             │
 │       Uma seção só (ex.: skill operacao, skill install).    │
 │   npx ponte-local skill --lista                             │

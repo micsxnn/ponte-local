@@ -28,8 +28,13 @@ function versaoDoSkillMd() {
   return "0.0.0";
 }
 
-// varre skill/ recursivamente: tudo que for texto/codigo entra
-function recursosSkill(dir, prefixo, out) {
+// varre uma pasta de recursos (skill/ ou references/) recursivamente
+function recursosPasta(dirName, out) {
+  return recursosSkill(path.join(RAIZ, dirName), "", out, dirName);
+}
+
+function recursosSkill(dir, prefixo, out, dirName) {
+  const raizNome = dirName || SKILL_DIR;
   let entradas;
   try {
     entradas = fs.readdirSync(dir, { withFileTypes: true });
@@ -40,11 +45,11 @@ function recursosSkill(dir, prefixo, out) {
     if (e.name.startsWith(".")) continue;
     const rel = prefixo + e.name;
     if (e.isDirectory()) {
-      recursosSkill(path.join(dir, e.name), rel + "/", out);
+      recursosSkill(path.join(dir, e.name), rel + "/", out, raizNome);
     } else if (/\.(md|txt|json|js|cjs|sh|bat|py|ts|tsx)$/.test(e.name)) {
       out.push({
-        origem: SKILL_DIR + "/" + rel,
-        destino: SKILL_DIR + "/" + rel,
+        origem: raizNome + "/" + rel,
+        destino: raizNome + "/" + rel,
         descricao: "Recurso da skill",
       });
     }
@@ -72,6 +77,7 @@ function main() {
     },
   ];
   recursosSkill(path.join(RAIZ, SKILL_DIR), "", arquivos);
+  recursosPasta("references", arquivos);
 
   const manifesto = {
     versao: String(versao),

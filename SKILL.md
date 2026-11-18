@@ -1,1150 +1,303 @@
 ---
 name: ponte-local
 description: >-
-  Operar o PC do usuário (Windows ou Linux) remotamente pelo chat. Instalar a
-  ponte (relay Next.js + agente Node.js zero-dependências), mostrar ao usuário
-  o que ele precisa instalar, validar a conexão e executar operações de
-  arquivos e comandos, com modos supervisionado/autônomo, lixeira com undo,
-  trava anticatástrofe e uma lane por máquina (cada PC com token e fila
-  próprios — comando de uma máquina nunca executa na outra). Use quando o
-  usuário pedir para você mexer no computador dele: organizar arquivos,
-  procurar coisas, rodar comandos, trocar configurações do desktop, automatizar
-  tarefas locais, ler arquivos de qualquer formato ou tamanho (leitura por
-  pedaços), com modo deus opcional (run_command sem confirmações s/N — a IA
-  pergunta ao usuário NO CHAT logo após conectar e ativa; nada no terminal) e
-  skill que o agente atualiza sozinho do repo. Se a ponte já está no ar,
-  qualquer IA (Claude, Manus…) opera só com a URL e o ADMIN_TOKEN — sem
-  hospedar nada.
+  Opera o PC do usuário pelo chat (Windows, Linux, macOS ou Termux):
+  arquivos, busca, organização, screenshot, mouse, teclado e comandos,
+  com lixeira, undo e trava anticatástrofe. Use quando pedirem para mexer
+  no computador, no desktop, em Downloads, ou citarem Ponte Local, ponte,
+  agent.js ou o PC deles. Se a ponte já estiver no ar, opere com a URL e
+  o ADMIN_TOKEN. Não rode `npx ponte-local start` você mesmo: esse
+  comando é só no PC do usuário.
+compatibility: >-
+  A IA precisa de saída HTTPS (curl ou Python 3). O PC do usuário precisa
+  de Node.js 18+. `npx ponte-local start` roda só no PC físico, nunca na
+  VM da IA.
+metadata:
+  version: "4.7.0"
 ---
 
-<!-- skill-version: 4.6.0 -->
+<!-- skill-version: 4.7.0 -->
 
 # Ponte Local — operação remota do PC do usuário
 
+A versão desta skill (`skill-version`) e a versão do npm (`package.json`,
+hoje a do agente) são numeradas separado. Não as iguale.
+
+Este arquivo é a spec de entrada. O manual longo não está aqui de propósito:
+rode `npx ponte-local skill <secao>` ou abra o arquivo em `references/`.
+`npx ponte-local skill` sem argumento imprime só este arquivo.
+
 ## QUAL COMANDO É O MEU? (leia antes de tudo)
 
-O pacote `ponte-local` é **híbrido**: o mesmo `npx` serve a dois lados
-opostos. **Você, IA, roda o comando do lado AGENTE — na sua VM, no seu
-servidor. NUNCA o do lado usuário.**
+O pacote `ponte-local` é híbrido. Você, IA, roda só o lado de leitura, na
+sua VM. O lado que executa é o do usuário, no PC físico.
 
-| | **O SEU (agente, na VM)** | **DO USUÁRIO (no PC físico)** |
+| | **O SEU (na VM)** | **DO USUÁRIO (no PC)** |
 |---|---|---|
-| **Comando** | `npx ponte-local skill`<br>`npx ponte-local acoes` | `npx ponte-local start` |
-| **O que faz** | imprime a spec e o manual das ações | sobe o agente local |
-| **Executa?** | **NUNCA** — é só leitura | **SIM** — é o único lado que executa |
+| **Comando** | `npx ponte-local skill` e `npx ponte-local acoes` | `npx ponte-local start` |
+| **Executa?** | não — só leitura | sim — único lado que executa |
 | **Grava config?** | nunca | sim (`~/ponte-agent/`) |
-| **Abre socket?** | nunca | sim (conversa com o relay) |
-
-**SEUS COMANDOS (use estes):**
+| **Abre socket?** | nunca | sim (só saída, para o relay) |
 
 ```bash
-npx ponte-local skill                  # a especificação completa desta skill
-npx ponte-local skill <secao>          # uma seção: skill operacao, skill acoes,
-                                       #   skill instalacao, skill relay, skill url,
-                                       #   skill 5-leis, skill referencia, skill
-                                       #   seguranca, skill apendice-a, skill terminal
-npx ponte-local skill --lista          # índice das seções
-npx ponte-local acoes                  # manual das 31 ações (mouse, tela, arquivos...)
-npx ponte-local acoes mouse_click      # detalhe de UMA ação
-npx ponte-local acoes --json           # todas as ações em JSON
+npx ponte-local skill                  # este arquivo
+npx ponte-local skill <secao>          # uma seção (skill --lista mostra o índice)
+npx ponte-local acoes                  # manual das ações; o total impresso é o certo
+npx ponte-local acoes mouse_click      # uma ação
+npx ponte-local acoes --json
 ```
 
-**O COMANDO DO USUÁRIO (NÃO é seu — mande ele COLAR no terminal dele):**
+O comando do usuário, para ele colar. Sem `--auto`:
 
 ```bash
-npx ponte-local start --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --auto --save
+npx ponte-local start --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --save
 ```
 
-**NUNCA rode `npx ponte-local start` na sua VM.** `start` sobe um agente
-local, liga a trava anticatástrofe e abre uma ponte de saída — é a
-**instrução para o terminal do usuário**, não para você. Se a ponte precisa
-ser instalada, você **entrega o comando** (o Bloco de Entrega do Passo 4) e
-o usuário cola. Se a ponte já está no ar (Apêndice A), você nem precisa dele:
-opera só por `curl` na API.
-
-Você **nunca** executa nada no PC do usuário diretamente: você **enfileira
-comandos** (`POST /api/ponte/cmd`) e o agente que está lá executa — com a
-trava, o escopo e a lixeira dele. Sua spec e o manual de ações saem pelo
-comando de leitura, no seu lado.
+`--auto` liga execução direta e fica gravado em `ponte.config.json`. Só
+entre no bloco depois de um "pode" explícito no chat. Nunca rode `start`
+na sua VM: você enfileira (`POST /api/ponte/cmd`) e o agente de lá executa.
 
 ## 0. A ponte em 60 segundos
 
-Três personagens:
+- **Relay** — Next.js num servidor. Guarda a fila e os resultados.
+- **Agente** — `agent.js`, zero dependências, no PC do usuário. Poll a cada
+  1,5 s. Só conexão de saída: sem porta aberta, VPN ou port forwarding.
+- **Você** — opera por HTTPS (`curl` ou `operador/ponte.py`).
 
-- **RELAY** — a central. Um app Next.js rodando num servidor (VM, preview de
-  plataforma ou VPS). Guarda as filas de comandos e os resultados.
-- **AGENTE** — o mordomo. Um arquivo só, `agent.js`, sem dependências, rodando
-  no PC do usuário. Ele **poll** (checa de tempo em tempo, a cada 1,5 s) o
-  relay, executa o que chega e devolve o resultado. Só abre conexão de
-  **saída** — nada de porta aberta, firewall, port forwarding ou VPN.
-- **VOCÊ** — a IA que lê isto. Opera por HTTPS com `curl` (ou o `ponte.py`),
-  de qualquer lugar do mundo.
+Um comando: `POST /cmd` com a **lane** → o agente executa → `GET /results?since=N`.
 
-```
-┌──────────────┐   poll (1,5s)    ┌─────────────────────┐   admin    ┌──────────┐
-│ PC do usuário │ ◄──────────────► │ relay Next.js       │ ◄────────► │   VOCÊ   │
-│  agent.js     │  GET  /poll      │ /api/ponte/*        │ injeta cmd │ (IA que  │
-│ (zero deps)   │  POST /result    │ URL pública https   │ + lê res.  │ lê isto) │
-└──────────────┘                  └─────────────────────┘            └──────────┘
-```
+**Lane** = uma máquina. 1 token = 1 lane = 1 fila. Comando de uma máquina
+nunca executa na outra. O nome sai do sufixo: `PONTE_TOKEN_MAQUINA_1` cria
+a lane `maquina_1` (minúsculas, só `a-z`, `0-9` e `_`, no máximo 32
+caracteres). Hífen não nasce. Token novo no `.env` só vale depois de
+reiniciar o relay.
 
-O ciclo de UM comando: você faz `POST /cmd` dizendo a **lane** → o agente da
-lane polla, executa → responde `POST /result` → você lê em
-`GET /results?since=N`. Pronto.
-
-**Lane** é a linha privada que liga você a UMA máquina: 1 máquina = 1 token =
-1 lane = 1 fila. Comando destinado a uma máquina nunca executa na outra.
-
-**Glossário** (os termos abaixo são usados no arquivo inteiro):
-
-| Termo | Significado em 1 frase |
+| Termo | Significado |
 |---|---|
-| `relay` | a central (Next.js) que guarda filas e resultados, hospedada num servidor |
-| `agente` | o `agent.js` no PC do usuário; executa e devolve |
-| `lane` | a fila de UMA máquina; o nome nasce do sufixo de `PONTE_TOKEN_<NOME>` |
-| `poll` | o agente checar o relay a cada 1,5 s ("tem coisa pra mim?") |
-| `token` | senha de 24+ caracteres; um por máquina (`PONTE_TOKEN_*`) + um seu (`PONTE_ADMIN_TOKEN`) |
-| `ADMIN_TOKEN` | o SEU token de operador — usado no header `x-ponte-admin` |
-| `.env` | arquivo de variáveis do relay no servidor; é lá que os tokens nascem (em hospedagem que limpa `.env`, nascem no `.env.ponte` — ver Passo 2) |
-| `/status` | o painel privado do operador (JSON): versão, lanes, quem está conectado |
-| `pedaço` / `proximoOffset` | leitura de arquivo fatiada; cada resposta traz o offset do próximo pedaço |
-| `modo deus` | agente para de pedir s/N para `run_command`; ativado só com aceite do usuário NO CHAT |
-| `trava anticatástrofe` | bloqueio FÍSICO no agente dos comandos destrutivos (veja a Lei 4) |
-| `s/N` | caixa de confirmação que aparece no terminal do usuário em modo supervisionado (60 s) |
+| `ADMIN_TOKEN` | o seu token, no header `x-ponte-admin` |
+| `modo deus` | `run_command` sem caixa s/N; só com aceite no chat, nunca oferecido na conexão |
+| `trava anticatástrofe` | bloqueio no agente; modo deus não contorna |
+| `s/N` | confirmação no terminal do usuário, 60 s, só no modo supervisionado |
 
-**Diga assim ao usuário (apresentação em 2 frases):**
-> "Instalei aí um programinha que me deixa organizar arquivos e rodar comandos
-> no seu PC pelo nosso chat. Ele só faz conexão de saída para o meu servidor —
-> não abre porta no seu computador, não precisa de VPN nem mexer no roteador."
+Diga assim, na instalação: "instalei um programinha que me deixa organizar
+arquivos e rodar comandos no seu PC pelo chat. Ele só faz conexão de saída
+— não abre porta, não precisa de VPN nem mexer no roteador."
 
 ## 1. AS 5 LEIS — valem mais que tudo que vem depois
 
-**Lei 1 — Toda tarefa termina com `task_done`.** Última ação de toda tarefa,
-sem exceção:
+**Lei 1 — Toda tarefa termina com `task_done`.** Última ação, sem exceção:
 
 ```json
 {"action":"task_done","args":{"resumo":"O QUE foi feito, em 1-4 linhas, linguagem simples para o usuário"}}
 ```
 
-O agente grava `relatorio-ponte.txt` e abre na tela do usuário com a seção
-**O QUE FOI FEITO** (o seu resumo, sem lista de comandos) e **FALHAS** (só se
-algo errou). Para ele, "a ponte funcionou" = a janela abrir. Redes de
-segurança do agente (não são licença para esquecer): pausa de 3 min entre
-comandos fecha a tarefa sozinha (env `PONTE_TAREFA_GAP_MS`, mínimo 1 s) e o
-encerramento do agente gera o relatório antes de sair. A tarefa seguinte fecha a janela
-anterior e apaga o txt; o BOOT do agente TAMBÉM apaga o txt anterior mesmo que
-nunca tenha abrido — em máquina sem interface gráfica, salve o conteúdo do txt
-ANTES de religar o agente (é a única cópia; o caminho fica impresso no
-terminal). `ping` e `task_done` não contam
-como trabalho; `task_done` sem comando de trabalho devolve `abriuRelatorio:false`.
-**Diga assim, na primeira tarefa:** "quando eu terminar, uma janela de
-relatório abre na sua tela. Se não abrir, me avisa."
+O agente grava `relatorio-ponte.txt` e abre na tela (seção **O QUE FOI
+FEITO**, sem lista de comandos; **FALHAS** só se algo errou). Pausa de 3 min
+(`PONTE_TAREFA_GAP_MS`, mínimo 1 s) ou encerrar o agente também fecha a
+tarefa — isso não é licença para esquecer. A tarefa seguinte apaga o txt;
+o boot também. Sem interface gráfica, salve o txt antes de religar.
+`ping` e `task_done` não contam como trabalho. Na primeira tarefa, avise
+que uma janela de relatório abre no fim.
 
-**Lei 2 — Todo comando vai na lane da máquina certa.** `POST /cmd` EXIGE
-`"lane":"<nome>"` (sem lane o relay REJEITA). Não invente nome: o `/status`
-mostra as lanes que existem e qual máquina está em cada uma
-(`lanes.<lane>.agentInfo.maquina`). Antes de mirar, confira
-`conectado:true` na lane alvo.
+**Lei 2 — Todo comando vai na lane da máquina certa.** `POST /cmd` sem
+`"lane"` é rejeitado. Não invente o nome: `/status` mostra
+`lanes.<lane>.agentInfo.maquina`. Confira `conectado:true` antes.
 
-**Lei 3 — modo deus se pergunta NO CHAT.** Assim que conectar, envie um
-`ping`: se vier `modoDeus:false` e `godModeDeclined:false`, pergunte AQUI na
-conversa — nunca nada digitado no terminal do usuário:
+**Lei 3 — Modo deus não se oferece.** Não pergunte no primeiro `ping`.
+Só pergunte se o usuário pedir para parar de confirmar, ou se a caixa s/N
+estiver impedindo uma tarefa que ele já autorizou. A pergunta é no chat,
+nunca no terminal:
 
-> "quer ativar o modo deus? Com ele eu executo comandos sem pedir s/N — a
-> trava anticatástrofe, a lixeira e o log continuam valendo."
+> "quer ativar o modo deus? Com ele eu executo comandos sem pedir s/N — a trava anticatástrofe, a lixeira e o log continuam valendo."
 
-Aceitou → `god_mode {"enabled":true}` e confirme. Recusou →
-`god_mode {"declined":true}` (fica registrado e você não pergunta de novo; um
-aceite novo limpa a recusa). Desligar é livre, sem pergunta:
-`god_mode {"enabled":false}`. O aceite do usuário NO CHAT também habilita o
-`run_command` de uma ponte instalada sem `--auto`/`--allow-run` — a decisão
-sempre é dele, o terminal é que não precisa de flag.
+Aceitou → `god_mode {"enabled":true}`. Recusou → `god_mode {"declined":true}`
+(não pergunte de novo; um aceite novo limpa a recusa). Desligar é livre:
+`god_mode {"enabled":false}`. O aceite no chat também habilita
+`run_command` numa ponte instalada sem `--auto` nem `--allow-run`.
 
-**Lei 4 — A trava anticatástrofe é intransponível ONDE ELA RODA.** Ela
-cobre **ação perigosa**, não só texto perigoso: `rm`/`mv` com glob, `mv` de
-alvo de sistema, `sudo` com flags (`-n`, `-i`, `-u`), `bash -lc '...'`,
-`eval`, `python -c`/`perl -e`/`node -e`, `source ./x.sh`, alias, `!!`,
-leitura de `/etc/shadow` ou de `~/.ssh`/`~/.aws`/`~/.npmrc`, `cmd /c rd /s`,
-aliases do PowerShell (`rm`, `rd`, `del`, `erase`), `$env:windir`, `reg
-delete`, `net user`, `takeown`, `icacls`, `bcdedit`. Se a ação **parece**
-destrutiva e a trava não pegou, **confirme com o usuário** em vez de
-executar. Ela roda no
-modo autônomo e no modo deus — nesses dois, nem modo deus contorna, nem
-aprovação. Em modo SUPERVISIONADO a trava NÃO roda: a proteção lá é o usuário,
-que aprova cada comando com `s`. Bloqueados na trava: fork bomb, expansão de
-comando (`$( )`, backtick, `>( )`), `mkfs`, `wipefs`, `dd of=` e `shred` em
-dispositivo clássico (`sd*`, `nvme*`, `mmcblk*`, `hd*`, `vd*`, `loop*`),
-escrita em `/dev/*`, `find -delete`, `xargs` com comando destrutivo (com ou
-sem flags no meio), pipe para interpretador (`| sh`, `| python`…), `curl | sh`,
-`chmod/chown -R` em pasta do sistema, `rm -r` em `/`, `/*`, `/home`, `~`,
-`$HOME`, `/boot`, `/etc`, `/usr`, `/var`, `/lib`, `/opt`, `/mnt`, `/media`,
-variável não resolvida, `.`/`..` e a home literal. Windows: `format`,
-`diskpart`, `cipher /w`, `vssadmin delete shadows`, `rd|rmdir /s` e `del /s`
-(flag em qualquer posição), `Remove-Item -Recurse` e o alias `ri` na raiz de
-drive, `C:\Windows`, `C:\Program Files` (inclui `C:\PROGRA~1`),
-`%USERPROFILE%` e home literal. A lista acima é o que está BLOQUEADO — padrão
-fora dela não tem garantia: antes de comando destrutivo incomum (disco fora
-do padrão, `/dev/mapper/…`, apagador exótico), confirme o alvo com o usuário
-NO CHAT. **Nunca tente contornar.**
+**Lei 4 — A trava anticatástrofe é intransponível onde ela roda.** Ela
+cobre ação perigosa, não só o texto: `rm`/`mv` com glob, `mv` de alvo de
+sistema, `sudo` com `-n`/`-i`/`-u`, `bash -lc`, `eval`, `python -c` /
+`perl -e` / `node -e`, `source`, alias, `!!`, leitura de `/etc/shadow` ou
+`~/.ssh` / `~/.aws` / `~/.npmrc`, `cmd /c rd /s`, aliases do PowerShell
+(`rm`, `rd`, `del`, `erase`), `$env:windir`, `reg delete`, `net user`,
+`takeown`, `icacls`, `bcdedit`. Se parece destrutivo e a trava não pegou,
+confirme no chat em vez de executar.
 
-**Lei 5 — Token nenhum vaza.** Tokens vivem no `.env` do relay e vão ao
-usuário uma única vez, NO CHAT PRIVADO, **um bloco por máquina** (só o token
-daquela máquina). Nunca em repo, screenshot, log ou chat público. Token que
-apareceu em arquivo versionado é token QUEIMADO: gere outro
-(`openssl rand -hex 16`), troque no `.env` e reinstale na máquina. O `/status` é
-privado: responde 401 sem o header `x-ponte-admin` — a página do painel abre
-com tela de login (200), quem valida o token é a API por trás — e nada é
-revelado sem token, nem que as máquinas existem. O atalho `?admin=` saiu do ar (token em
-URL vira registro em log de gateway) — é só o header.
+A trava roda no autônomo e no modo deus — nenhum dos dois contorna, nem
+com aprovação. No supervisionado a trava não roda: quem protege é o
+usuário, com `s`. Bloqueados: fork bomb, `$( )`, backtick, `>( )`, `mkfs`,
+`wipefs`, `dd of=` e `shred` em `sd*`/`nvme*`/`mmcblk*`/`hd*`/`vd*`/`loop*`,
+escrita em `/dev/*`, `find -delete`, `xargs` destrutivo, pipe para
+interpretador (`| sh`, `| python`), `curl | sh`, `chmod`/`chown -R` em
+pasta de sistema, `rm -r` em `/`, `/*`, `/home`, `~`, `$HOME`, `/boot`,
+`/etc`, `/usr`, `/var`, `/lib`, `/opt`, `/mnt`, `/media`, variável não
+resolvida, `.`/`..` e a home literal. Windows: `format`, `diskpart`,
+`cipher /w`, `vssadmin delete shadows`, `rd`/`rmdir /s`, `del /s`,
+`Remove-Item -Recurse` e o alias `ri` na raiz de drive, `C:\Windows`,
+`C:\Program Files` (inclui `C:\PROGRA~1`), `%USERPROFILE%` e home literal.
+Fora dessa lista não há garantia (disco fora do padrão, `/dev/mapper`,
+apagador exótico): confirme o alvo no chat. Nunca tente contornar.
+
+**Lei 5 — Token nenhum vaza.** Tokens nascem no `.env` do relay (ou em
+`.env.ponte`, se a hospedagem apaga `.env`) e vão ao usuário uma vez, no
+chat privado, um bloco por máquina. Nunca em repo, screenshot, log ou chat
+público. Token versionado está queimado: `openssl rand -hex 16`, troque e
+reinstale. `/status` sem `x-ponte-admin` responde 401. Não use token em
+URL (`?admin=` saiu do ar).
 
 ## 2. A ponte já está no ar?
 
-Se outra sessão, outra IA ou outra plataforma já instalou a ponte, você não
-hospeda nada nem gera token: vá direto ao **Apêndice A** com a URL pública e o
-ADMIN_TOKEN que o usuário tiver. O resto deste capítulo é para quem está
-montando a ponte agora.
+Se outra sessão já instalou, não hospede nada e não gere token. Vá ao
+**Apêndice A** com a URL pública e o `ADMIN_TOKEN` que o usuário tiver.
+O resto deste capítulo é para quem está montando agora.
 
 ## 3. Preparar do zero — siga a sequência
 
-Os passos abaixo são A ORDEM. Não pule; cada um valida o anterior.
+Não pule passo. O procedimento longo (copiar o relay, túnel, teclado,
+mouse, Termux) está em `references/instalacao.md`.
 
 ### Passo 0 — Duas perguntas antes de tudo
 
-1. **A ponte já existe?** (capítulo 2 — sim → Apêndice A e pare aqui.)
-2. **O PC do usuário é Windows ou Linux (qual distro)?** Os comandos mudam
-   completamente. Pergunte, nunca assuma.
-   **Diga assim:** "seu PC é Windows ou Linux? Se for Linux, qual distro
-   (Ubuntu, Arch/CachyOS…)?"
+1. A ponte já existe? Se sim, Apêndice A e pare.
+2. Qual é o PC: Windows, Linux (qual distro), macOS ou Termux? Pergunte.
+   Não assuma.
 
-**O que o usuário vai fazer durante a instalação (anuncie logo):**
-> "Você vai colar 1 ou 2 blocos de comando que eu te mando; se for Windows e
-> o Node for instalado agora, fechar e abrir o PowerShell de novo no meio;
-> deixar a janela do agente aberta; e, quando eu estiver trabalhando aí,
-> apertar `s` ou `n` numa caixa que pode aparecer. No fim de cada tarefa uma
-> janela de relatório abre sozinha."
+Anuncie o que ele vai fazer: colar um bloco; no Windows, se o Node acabar
+de ser instalado, fechar e abrir o PowerShell; deixar a janela do agente
+aberta; apertar `s` ou `n` se uma caixa aparecer; no fim, uma janela de
+relatório abre sozinha.
 
-### Passo 1 — Obtenha o repo e saiba o que é cada pasta
+Entregue este bloco, com URL e token já preenchidos (nada de placeholder):
 
 ```bash
-# ONDE: no seu servidor/VM
-git clone https://github.com/micsxnn/ponte-local.git
+npx ponte-local start --server "https://URL_DA_PONTE" --token "TOKEN_DA_MAQUINA_X" --save
 ```
 
-```
-ponte-local/
-├── SKILL.md            ← este arquivo (instruções para você, IA)
-├── agente/             ← LADO DO PC: agent.js (o agente inteiro), SKILL.md
-│                          (variante para IA dentro da máquina), LEIA-ME.md,
-│                          rodar.sh, atualizar.sh, rodar.bat, watchdog.bat,
-│                          teste-trava.cjs
-├── relay/              ← LADO DO SERVIDOR: ponte-store.ts, api/<rota>/route.ts,
-│                          painel/, RESTAURAR.md (reconstruir o relay após
-│                          reset da VM de preview)
-└── operador/           ← CLI sua na VM: ponte.py, teste-pegar-mock.py
-```
-
-### Passo 2 — Relay no ar
-
-**Pré-requisitos do SERVIDOR** (onde você roda): Node.js 18+, `openssl`, e uma
-URL pública HTTPS (Passo 3). Python 3 é opcional (só para o `ponte.py`).
-
-```bash
-# ONDE: no seu servidor/VM — crie o projeto e copie os arquivos do repo
-CI=1 npx create-next-app@latest ponte-relay --typescript --app --no-eslint --src-dir --import-alias "@/*"
-cd ponte-relay
-```
-
-| Arquivo do repo             | Destino no projeto Next.js             |
-|-----------------------------|----------------------------------------|
-| `relay/ponte-store.ts`      | `src/lib/ponte-store.ts`               |
-| `relay/api/poll/route.ts`   | `src/app/api/ponte/poll/route.ts`      |
-| `relay/api/result/route.ts` | `src/app/api/ponte/result/route.ts`    |
-| `relay/api/cmd/route.ts`    | `src/app/api/ponte/cmd/route.ts`       |
-| `relay/api/results/route.ts`| `src/app/api/ponte/results/route.ts`   |
-| `relay/api/status/route.ts` | `src/app/api/ponte/status/route.ts`    |
-| `relay/api/download/route.ts`| `src/app/api/ponte/download/route.ts` |
-| `relay/painel/page.tsx`     | `src/app/page.tsx`                     |
-| `agente/agent.js`           | `download/ponte-agent/agent.js` (a rota `/api/ponte/download` serve este caminho) |
-
-**Next.js 16+:** edite `next.config.ts` e deixe `cacheComponents: false`
-(e remova `partialPrefetching: true` se existir) — senão as rotas quebram com
-*"Route segment config "dynamic" is not compatible"*.
-
-**Tokens: um por máquina, no `.env`** (o Next lê sozinho; nada hardcoded).
-Gere primeiro, cole depois — o `.env` não executa comando:
-
-```bash
-# ONDE: no seu servidor/VM — gere um valor por linha (copie cada saída)
-openssl rand -hex 16
-```
-
-```ini
-# ONDE: no seu servidor/VM — arquivo .env do projeto (a pasta do relay)
-# NÃO ponha comentário na MESMA linha do valor: o comando de validação
-# abaixo faz cut no "=" e um "# ..." na linha suja o header (401 falso).
-PONTE_ADMIN_TOKEN=cole-aqui-o-valor-gerado
-PONTE_TOKEN_MAQUINA_1=cole-aqui-o-valor-gerado
-# PONTE_TOKEN_MAQUINA_2=cole-aqui-o-valor-gerado   ← só se houver 2ª máquina
-```
-
-> **Hospedagem que apaga credencial de `.env`?** Algumas sandboxes/VMs de
-> plataforma fazem isso — o relay recarrega e as lanes caem (o "token que
-> some toda hora"). Nelas use o mecanismo **tokens eternos**: os tokens
-> moram num arquivo irmão `.env.ponte` (que essas plataformas ignoram) e são
-> **exportados no ambiente do processo** pelo `relay/iniciar-relay.sh` do
-> repo (ele sobe, espera e valida o relay; `--reiniciar` força). Nesse modo
-> o `.env` fica SEM `PONTE_*` de propósito — estado correto, não defeito:
-> NÃO re-adicione. Os comandos abaixo funcionam nos dois modos (o `grep`
-> consulta `.env` e `.env.ponte`).
-
-Carregue o token de admin AGORA — os curls dos Passos 2, 3 e 5 usam
-`$PONTE_ADMIN_TOKEN` (exportar só no § 4 é tarde):
-
-```bash
-# ONDE: no seu servidor/VM (na pasta do relay)
-export PONTE_ADMIN_TOKEN=$(grep -hE '^PONTE_ADMIN_TOKEN=' .env .env.ponte 2>/dev/null | head -n1 | cut -d= -f2-)
-```
-
-**Regras do nome da lane (onde TODO agente se confunde — leia devagar):**
-
-- O nome da lane vem do **sufixo** da variável, em minúsculas:
-  `PONTE_TOKEN_MAQUINA_1` cria a lane `maquina_1`. Quer `escritorio`?
-  `PONTE_TOKEN_ESCRITORIO`.
-- O sufixo só aceita **A-Z, 0-9 e `_`** — variável de ambiente NÃO aceita
-  hífen. Uma lane "maquina-1" nunca vai existir; a certa é `maquina_1`.
-- Teto de TAMANHO: a lane (sufixo em minúsculas) tem no máximo 32 caracteres —
-  sufixo maior é descartado EM SILÊNCIO no boot; sintoma: "lane sem token" com
-  a linha certa no `.env`.
-- Máquina nova = linha nova no `.env` (ou no `.env.ponte`, no modo tokens
-  eternos). Nunca o mesmo token em duas máquinas — a lane É a máquina.
-- Aliases legados que ainda valem (transição do token único):
-  `PONTE_AGENT_TOKEN` → lane `netbook`; `PONTE_TEST_TOKEN` → lane `test`.
-- **Trocou ou criou token no `.env`? REINICIE o relay.** A lane nasce no boot;
-  sem restart o `/cmd` responde "lane sem token" e você vai achar que é erro
-  de digitação. (É para reiniciar que serve esta lista: token criado, token
-  trocado, máquina nova no `.env` — sempre restart.) No modo tokens eternos,
-  edite o `.env.ponte` e reinicie com `bash relay/iniciar-relay.sh --reiniciar`.
-
-Suba o relay **já em background** (se a sessão morrer, a ponte cai):
-
-```bash
-# ONDE: no seu servidor/VM
-nohup npm run dev > relay.log 2>&1 &   # porta 3000 (ocupada? PORT=3001 npm run dev)
-# hospedagem que limpa .env? em vez do nohup acima:
-bash relay/iniciar-relay.sh            # sobe com os tokens no ambiente do processo
-```
-
-Subiu em outra porta? Troque o `3000` em TODOS os comandos seguintes — curls
-de validação, túnel do Passo 3 e exemplos do § 4 (o `PONTE_URL` do `ponte.py`
-também aponta para `http://127.0.0.1:3000` por padrão).
-
-Valide **local**:
-
-```bash
-# ONDE: no seu servidor/VM
-curl -s -H "x-ponte-admin: $(grep -hE '^PONTE_ADMIN_TOKEN=' .env .env.ponte 2>/dev/null | head -n1 | cut -d= -f2-)" \
-  http://127.0.0.1:3000/api/ponte/status
-# esperado: {"ok":true,"connected":false,"lanes":{...},"version":"..."}
-# SEM o header: 401 — o status é privado. 401 COM header? valor sujo
-# (comentário na linha do .env) ou .env não recarregado — reinicie o relay.
-# HTML 500? Veja o cacheComponents acima.
-```
-
-O estado do relay persiste em `.ponte-estado.json` (fila pendente, últimos
-resultados, specs): editar arquivo/reiniciar o Next não amputa histórico, e a
-janela de "conectado" é de 45 s (soluço de rede não apaga a luz). Para escolher
-a pasta de estado em VPS/container: `PONTE_DATA_DIR`.
-
-### Passo 3 — URL pública: descubra, valide, nunca adivinhe
-
-O agente precisa de uma URL pública HTTPS que chegue ao relay. Descubra NESTA
-ordem — nunca teste candidatos inventados (URL errada = 404 e tempo queimado):
-
-1. **Contexto da plataforma** (SÓ vale em preview de plataforma, tipo
-   z.ai/space-z): a URL é `https://preview-chat-<CHAT_ID>.space-z.ai/` — o
-   `CHAT_ID` vem no metadata de cada mensagem da conversa. Determinístico;
-   nada de adivinhar. Em VPS ou outra plataforma, pule direto para o 2 ou 3.
-2. **Variáveis de ambiente:** `env | grep -iE 'preview|url|host|domain|bot'`.
-3. **Pergunte ao usuário** — **Diga assim:** "me cola a URL de preview que
-   aparece aí no topo do navegador".
-4. **Plano B — túnel sem conta:**
-
-```bash
-# ONDE: no seu servidor/VM — túnel em SEGUNDO plano (primeiro plano trava o shell)
-curl -fLo cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x cloudflared
-nohup ./cloudflared tunnel --url http://localhost:3000 > tunel.log 2>&1 &
-grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunel.log | head -1
-# ngrok também serve; exige conta
-```
-
-ATENCAO: A URL do trycloudflare **MUDA a cada execução do túnel**: caiu, a ponte
-cai — reerga e religue o agente com `--server NOVA_URL --save` (§ 6). Por
-isso, URL de plataforma ou domínio fixo vencem o túnel sempre.
-
-Valide local E público num bloco só (mesmo JSON nos dois = roteamento OK):
-
-```bash
-# ONDE: no seu servidor/VM
-curl -s http://127.0.0.1:3000/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"  # relay no ar
-curl -s https://URL_DA_PONTE/api/ponte/status   -H "x-ponte-admin: $PONTE_ADMIN_TOKEN" # roteamento externo OK
-# ambas sem header → 401. Local ok + público 404 = problema de roteamento/gateway.
-```
-
-**Portão do Passo 3 — atravesse só com as 3 PROVAS:**
-
-1. `curl` LOCAL devolve JSON `ok:true`;
-2. `curl` PÚBLICO devolve o MESMO JSON;
-3. `curl -fsS https://URL_DA_PONTE/api/ponte/download | head -c 40` devolve
-   **JavaScript** (começa com `const`/`#!`…), NÃO um JSON de erro — JSON de
-   erro aqui = faltou copiar `agente/agent.js → download/ponte-agent/`
-   (tabela do Passo 2).
-
-Sem as três, o agente do usuário vai pollar para o nada — ou instalar um
-`agent.js` que nem é JavaScript.
-
-### Passo 4 — Instalar o agente NA MÁQUINA do usuário
-
-**Duas formas. Entregue o `npx` (forma A) — é o caminho oficial, não instala
-nada e não depende de a IA montar bloco nenhum.**
-
-#### Forma A — `npx` (oficial, recomendada)
-
-O agente é o pacote npm `ponte-local`. O `npx` baixa e roda na hora:
-
-```bash
-npx ponte-local start --server https://URL_DA_PONTE --token TOKEN_DA_MAQUINA_X --auto --save
-```
-
-- Na primeira vez, se rodar **sem** `--server`/`--token`, o `npx` pergunta a
-  URL e o token no terminal e salva a config.
-- Das próximas vezes é só `npx ponte-local start`.
-- `npx ponte-local help` mostra todas as opções (e os dois lados).
-- Os dados (config, log, relatório, SKILL.md baixada) ficam em
-  `~/ponte-agent/` — **fora** do pacote, porque o cache do `npx` é efêmero.
-  `PONTE_HOME` muda esse lugar.
-
-**Diga assim:** "copia e cola esse comando no terminal. Ele baixa o
-programinha e já conecta. Na próxima vez é só `npx ponte-local start`."
-
-#### Forma B — manual (sem `npx`)
-
-Só se o usuário disser que **não** pode usar `npx` (ou não tem internet para
-baixar o pacote): baixe o `agent.js` e rode com `node` — bloco de entrega
-logo abaixo.
-
-**Pré-requisitos no PC do usuário:** Node.js 18+ e um terminal. Confira/instale:
-
-| SO/Distro     | Comando para instalar |
-|---------------|-----------------------|
-| Windows 10/11 | `winget install OpenJS.NodeJS.LTS` (ou nodejs.org) — `curl.exe` já vem no sistema |
-| Arch/CachyOS  | `sudo pacman -S --needed nodejs curl` |
-| Debian/Ubuntu | `sudo apt install -y curl && curl -fsSL https://deb.nodesource.com/setup_20.x \| sudo -E bash - && sudo apt install -y nodejs` |
-| Fedora        | `sudo dnf install -y nodejs curl` |
-| openSUSE      | `sudo zypper install -y nodejs20 curl` |
-
-Verificação: `node --version` (≥ 18). **Diga assim:** "seu PC precisa do
-Node; cola isso no terminal, demora ~1 min."
-
-**OPCIONAL — só se a IA quiser tirar print da tela** (`screenshot` /
-`screenshot_window`): o resto do agente é zero-dependências, mas a captura
-precisa de uma ferramenta que a distro já traz. No Windows não é preciso
-nada (PowerShell + System.Drawing são nativos). No Linux:
-
-| Sessão | Pacote | Janela por título? |
-|--------|---------|--------------------|
-| X11 | `imagemagick` (+ `xdotool`) | sim |
-| X11 | `scrot` ou `maim` | não (só tela inteira) |
-| Wayland/KDE | `spectacle` | janela em foco |
-| Wayland/Hyprland | `hyprshot` | janela em foco |
-| Wayland/GNOME | `gnome-screenshot` | janela em foco |
-| Termux | `termux-api` | não |
-
-```bash
-sudo pacman -S --needed imagemagick xdotool   # Arch/CachyOS
-sudo apt install -y imagemagick xdotool        # Debian/Ubuntu
-sudo dnf install -y ImageMagick xdotool        # Fedora
-```
-
-ATENCAO: **No Wayland** o compositor não expõe as janelas de forma genérica: a
-`screenshot_window` captura a janela **em foco** e avisa em `janela.aviso`.
-No X11 e no Windows a janela pedida é capturada exata.
-
-**REGRA DA IA — a captura depende do usuário instalar uma ferramenta.** As
-ações `screenshot`/`screenshot_window` usam o que a distro tem; se a ação
-voltar com "Não consegui capturar a tela" (ferramenta ausente), a IA **DEVE**:
-
-1. **perguntar ao usuário** qual a distro e a sessão gráfica
-   (`echo $XDG_SESSION_TYPE` → `x11` ou `wayland`);
-2. **mandar o comando de instalação** da tabela acima (NUNCA inventar
-   pacote: `import` é do `imagemagick`, `scrot` é do `scrot`);
-3. **esperar a instalação** e só então repetir a ação;
-4. **nunca** contornar com `run_command` e **nunca** dizer que capturou
-   sem ter capturado.
-
-Ofereça caminho sem print: "se preferir não instalar nada, eu sigo sem
-tirar print — funciona igual".
-
-### O agente e a skill se atualizam sozinhos
-
-**A skill** (pacote inteiro, não só um arquivo)
-
-A skill é um **PACOTE** de arquivos, não um `.md` solto. O repo publica um
-**manifesto** (`skill-manifest.json`) que lista tudo o que deve estar na
-máquina do usuário:
-
-- `SKILL.md` — a spec que você (a IA) lê
-- `agente/SKILL.md` — a variante para a IA dentro da máquina
-- `agente/LEIA-ME.md` — o manual do usuário
-- `skill/**` — qualquer recurso novo que o repo adicione
-
-**Quem atualiza:**
-- **O agente** (na máquina do usuário) baixa o pacote inteiro sozinho, no boot
-  e a cada 60 s. Arquivo **novo** da skill chega sem precisar mudar código:
-  o manifesto é a fonte da verdade.
-- **O usuário** pode forçar a qualquer momento: `npx ponte-local update`
-  (baixa o agente novo + o pacote inteiro da skill, inclusive arquivos novos).
-
-**Quando o pacote muda, o que o usuário vê** (no terminal dele, sem entender
-de manifesto):
-
-```
-  ┌──────────────────────────────────────────────┐
-  │  Skill atualizada: v4.3.0 -> v4.4.0          │
-  └──────────────────────────────────────────────┘
-    4 arquivo(s) atualizado(s) (incluindo 2 novo(s))
-    A IA ja usa a versao nova. Nada a fazer.
-```
-
-**Quando o usuário dispara `skill_update` pela IA**, a resposta traz a
-versão antiga, a nova e a lista de arquivos que entraram/saíram.
-
-**O `agent.js` também se atualiza sozinho** (v1.19.0): a cada 30 min o agente
-checa se há versão nova no repo, baixa, valida com `node --check` e a deixa
-pronta (`agent.novo.js`). No **próximo boot** ela entra em vigor, com o
-arquivo anterior guardado como `agent.js.bak`. O agente não se troca em
-execução (seria perigoso) — ele avisa no terminal:
-
-```
-  ┌──────────────────────────────────────────────┐
-  │  Nova versao do agente: v1.19.0              │
-  └──────────────────────────────────────────────┘
-    Baixada e validada. Reinicie o agente para usar.
-```
-
-Tudo isso é **Node puro** (sem shell, sem `bash`, sem `curl`), então funciona
-igual no Linux (qualquer distro), no Windows, no macOS e no Termux. Se o
-usuário estiver rodando do cache do `npx`, o próprio `npx` já resolve a versão
-nova do npm — o agente avisa e não mexe no cache.
-
-### Digitar no teclado — o agente PRECISA ENSINAR o usuário a instalar
-
-As ações `keyboard_type` e `keyboard_key` **não funcionam sozinhas**: elas
-dependem de uma ferramenta de injeção de teclado que o sistema precisa ter.
-O resto do agente é zero-dependências, mas o teclado não é.
-
-**REGRA:** se a ação voltar com erro de "ferramenta ausente" (ou "Não consegui
-digitar"), a IA **DEVE** pedir ao usuário para instalar — nunca fingir que
-digitou, nunca contornar com `run_command`.
-
-| Onde | Precisa de | Comando |
-|------|-----------|---------|
-| **Windows** | nada | PowerShell + SendInput já vêm no sistema |
-| **Linux Wayland** | `ydotool` | `sudo pacman -S --needed ydotool` + `sudo usermod -aG input $USER` (relogin) |
-| **Linux X11** | `xdotool` | `sudo pacman -S --needed xdotool` |
-| **macOS** | `cliclick` | `brew install cliclick` |
-| **Termux** | `input` do Android | requer aparelho rooteado (INJECT_EVENTS) |
-
-**Como descobrir a sessão gráfica** (X11 ou Wayland) — peça para o usuário
-rodar:
-
-```bash
-echo $XDG_SESSION_TYPE
-```
-
-**Diga assim ao usuário:** "para eu digitar no seu teclado, seu sistema
-precisa de uma ferramenta de injeção — no seu caso é `sudo pacman -S --needed
-ydotool`. É do sistema, não mexe em nada seu. Quer que eu instale?"
-
-ATENÇÃO: **A TRAVA CONTINUA VALENDO PARA O TECLADO.** Digitar `rm -rf /` num
-terminal é tão destrutivo quanto executar — e é recusado do mesmo jeito. O
-agente mantém um **buffer da linha do prompt**: o que a IA digita vai
-acumulando e a trava olha a linha inteira. Se a linha virar destrutiva, a
-digitação é recusada na hora.
-
-ATENÇÃO: **COLAR É BLOQUEADO** (`ctrl+v`, `shift+insert`, `ctrl+insert`):
-o conteúdo colado não passaria pela trava. A IA tem que **digitar** o texto,
-nunca colar.
-
-ATENÇÃO: **TAB É BLOQUEADO**: no shell ele *completa* o comando, e a trava
-nunca veria o resultado da completion. A IA digita o caminho inteiro.
-
-ATENÇÃO: **ATALHOS DESTRUTIVOS SÃO BLOQUEADOS**: `alt+f4` (fecha a janela e
-perde trabalho não salvo), `ctrl+alt+delete`, `ctrl+shift+delete`,
-`super+r`, `super+q`, `super+l`, `ctrl+w`.
-
-ATENÇÃO: **O TECLADO EXIGE O MODO HABILITADO** — igual ao `run_command`. No modo
-supervisionado, o usuário aprova **cada digitação** com `s`/`N` no terminal
-dele (60 s). No autônomo, vai direto, com a trava ativa.
-
-ATENÇÃO: **O AGENTE NÃO SABE EM QUE APP VAI DIGITAR** (terminal? editor? caixa
-de senha?). A trava presume um prompt de shell. Antes de digitar em algo
-sensível, a IA deve **ler a tela** (`screenshot`) para saber o que é.
-
-### Mexer no mouse — o agente PRECISA ENSINAR o usuário a instalar
-
-As ações `mouse_move`, `mouse_click`, `mouse_scroll`, `mouse_drag` e
-`mouse_position` **não funcionam sozinhas**: elas dependem de uma ferramenta
-de controle do mouse que o sistema precisa ter. O resto do agente é
-zero-dependências, mas o mouse não é.
-
-**REGRA:** se a ação voltar com erro de "ferramenta ausente" (ou "Não consegui
-... no mouse"), a IA **DEVE** pedir ao usuário para instalar — nunca fingir
-que mexeu no mouse, nunca contornar com `run_command`.
-
-| Onde | Precisa de | Comando |
-|------|-----------|---------|
-| **Windows** | nada | PowerShell + user32 já vêm no sistema |
-| **Linux X11** | `xdotool` | `sudo pacman -S --needed xdotool` |
-| **Linux Wayland** | `ydotool` ou `dotool` | `sudo pacman -S --needed ydotool` + `sudo usermod -aG input $USER` (relogin) + `systemctl --user enable --now ydotool` |
-| **Termux** | `termux-api` | `pkg install termux-api` |
-| **macOS** | `cliclick` | `brew install cliclick` |
-
-**Como descobrir a sessão gráfica** (X11 ou Wayland) — peça para o usuário
-rodar:
-
-```bash
-echo $XDG_SESSION_TYPE
-```
-
-ATENCAO: **No Wayland o `xdotool` NÃO serve**: ele mexe só no cursor do XWayland
-(aplicativos X11), não no cursor real do compositor. O agente tenta o
-`ydotool` primeiro e, se cair no `xdotool`, a resposta vem com `aviso` —
-**a IA DEVE ler esse aviso** e, se ele estiver lá, avisar o usuário de que o
-mouse não vai ser controlado de verdade.
-
-**Diga assim ao usuário:** "para eu mexer no seu mouse, seu sistema precisa
-de uma ferramenta de controle — no seu caso é `sudo pacman -S --needed
-xdotool`. É do sistema, não mexe em nada seu. Quer que eu instale?"
-
-ATENCAO: **CLIQUE É AÇÃO DE CONSEQUÊNCIA.** Um clique pode apertar "Apagar",
-"Confirmar", "Finalizar compra", "Enviar". Antes de clicar, a IA **tem que
-ler a tela** (`screenshot`) para saber o que está sob o cursor, e quando o
-alvo for destrutivo ou irreversível, **confirmar com o usuário no chat**.
-
-ATENCAO: **Windows: Node instalado AGORA? Feche TODAS as janelas do PowerShell e
-abra uma NOVA antes de seguir.** O PATH novo não entra em janelas que já
-estavam abertas — na janela velha, `node agent.js` devolve "o termo node não
-é reconhecido". **Diga assim:** "fechou todas as janelas do PowerShell? abre
-uma nova, aí sim cola o bloco abaixo".
-
-**O BLOCO DE ENTREGA (modelo canônico — único do arquivo).** Um bloco POR
-máquina, com URL e token JÁ preenchidos por você; o usuário só copia, cola e
-roda (não digita token, não abre página, não preenche placeholder). Antes de
-mandar, releia o bloco: TODO placeholder (`URL_DA_PONTE`, `TOKEN_DA_MAQUINA_X`)
-tem que ter virado valor real — bloco com placeholder literal instala um
-agente morto. O bloco instala em modo **autônomo** (`--auto`): você executa
-comandos direto, com a trava anticatástrofe ativa — o usuário pode trocar o
-modo depois (§ 4.4), e a Lei 3 continua valendo.
-
-**FORMA A — `npx` (entregue ESTE).** Funciona em Linux, macOS, Windows e
-Termux — é o mesmo comando nos quatro:
-
-```bash
-# ONDE: no PC DO USUÁRIO (Linux/macOS/Windows/Termux) — copie TUDO, cole, Enter
-npx ponte-local start --server "URL_DA_PONTE" --token "TOKEN_DA_MAQUINA_X" --auto --save
-```
-
-Checklist ANTES de entregar: a URL é a PÚBLICA (não localhost), o token é o
-da lane certa, quem roda é a máquina certa.
-**Diga assim:** "copia tudo, cola e Enter. O token aí é só da tua máquina —
-não compartilha. Deixa essa janela aberta: é por ela que eu trabalho; fechou,
-meu acesso cai (depois é só rodar `npx ponte-local start` de novo)."
-
-**FORMA B — manual (só se o usuário não puder usar `npx`).** Baixa o
-`agent.js` e roda com `node`:
-
-```bash
-# ONDE: no PC DO USUÁRIO (Linux/macOS/Termux) — copie TUDO, cole, Enter
-mkdir -p ~/ponte-agent; cd ~/ponte-agent
-curl -fsSL "URL_DA_PONTE/api/ponte/download" -o agent.js
-node agent.js --server "URL_DA_PONTE" --token TOKEN_DA_MAQUINA_X --auto --save
-node agent.js
-```
-
-```powershell
-# ONDE: no PC DO USUÁRIO (Windows PowerShell — curl.exe COM a extensão)
-mkdir "$HOME\ponte-agent" -Force; cd "$HOME\ponte-agent"
-curl.exe -fso agent.js "URL_DA_PONTE/api/ponte/download"
-node agent.js --server "URL_DA_PONTE" --token TOKEN_DA_MAQUINA_X --auto --save
-node agent.js
-```
-
-Nas duas formas a config cai em `~/ponte-agent/ponte.config.json` — dá para
-trocar de uma para a outra sem reconfigurar nada. Onde o repo é público, a
-alternativa de download é
-`curl -fso agent.js https://raw.githubusercontent.com/micsxnn/ponte-local/main/agente/agent.js`.
-
-Notas por plataforma (o resto é igual):
-
-- **Windows — dia a dia:** caminhos absolutos são `C:\Users\usuario\...`. O
-  `rodar.bat` (duplo clique) desliga o QuickEdit do console e loga em
-  `ponte-agent.log` — clique acidental dentro da janela NÃO congela mais o
-  node. O `watchdog.bat` religa sozinho se o agente morrer (confere a cada
-  30 s). Ambos vêm na pasta `agente/` do repo — baixe e envie com
-  `write_binary` se o usuário quiser usá-los. Se um comando precisar de
-  admin, o usuário fecha o agente e reabre o PowerShell com "Executar como
-  administrador" (a decisão é fisicamente dele).
-- **Termux (Android):** lane própria, token próprio:
-
-```bash
-# ONDE: no TERMIUX do usuário — copie TUDO, cole, Enter
-pkg update -y && pkg install -y nodejs-lts
-termux-setup-storage   # ATENCAO: VAI APARECER UM PEDIDO DE PERMISSÃO DO ANDROID: aceite
-termux-wake-lock
-npx ponte-local start --server "URL_DA_PONTE" --token TOKEN_DO_APARELHO --auto --save
-```
-
-(O Termux não tem `npx` por padrão: se der "comando não encontrado", use a
-forma manual — `mkdir -p ~/ponte-agent`, baixe o `agent.js` e rode
-`node ~/ponte-agent/agent.js --server ... --token ... --auto --save`.)
-
-  **Diga assim (Termux):** "no meio vai aparecer um pedido de permissão de
-  acesso aos arquivos do Android — toca em PERMITIR". Mantenha vivo:
-  `termux-wake-lock` antes de religar, Termux FORA da otimização de bateria
-  (Ajustes → bateria sem restrição) e a sessão aberta — o Android mata
-  processo em segundo plano. O `run_command` resolve o bash sozinho; com o
-  pacote Termux:API (`pkg install termux-api` + app do F-Droid) funcionam
-  `termux-battery-status`, `termux-notification`, `termux-toast`,
-  `termux-camera-photo` e `am start` para abrir apps; o armazenamento fica em
-  `~/storage/shared`. O relatório não abre app: fica em
-  `~/ponte-agent/relatorio-ponte.txt` (`cat` ou `termux-open`).
-
-### Passo 5 — Validar a conexão e ativar
-
-```bash
-# ONDE: no seu servidor/VM
-curl -s https://URL_DA_PONTE/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"
-# lanes.<lane>.conectado:true + agentInfo.maquina = a máquina está na ponte
-```
-
-Depois de `conectado:true`, mande um `ping` (§ 4.2): ele traz as specs e o
-estado do modo. Então aplique a **Lei 3** (pergunta do modo deus no chat).
-Instalação pronta — daqui em diante é o dia a dia.
+Checklist: URL pública (não localhost), token da lane dessa máquina, quem
+cola é o dono dessa máquina. Diga que a janela precisa ficar aberta.
+
+Para montar o relay, achar a URL e o bloco manual (sem npx): 
+`npx ponte-local skill relay`, `skill url`, `skill instalacao`.
 
 ## 4. Operar
 
 ### 4.1 Mandar comando e ler resultado
 
 ```bash
-# ONDE: no seu servidor/VM (ou onde você estiver — é API HTTP pura)
 export PONTE_URL=https://URL_DA_PONTE
 export PONTE_ADMIN_TOKEN=o-token-de-admin
 
-# enfileira — diga A QUAL MÁQUINA (lane, veja no /status)
-# resposta: {"ok":true,"id":77,"lane":"maquina_1"}
 curl -s -X POST $PONTE_URL/api/ponte/cmd \
   -H "x-ponte-admin: $PONTE_ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"lane":"maquina_1","action":"ping","args":{}}'
 
-# leia desde id-1; o lastId da resposta é o seu próximo since
 curl -s "$PONTE_URL/api/ponte/results?since=76&lane=maquina_1" \
   -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"
 ```
 
-`results?since=X` devolve `{"ok":true,"results":[...],"lastId":M}` — no máximo
-**100 resultados por chamada**; com `&lane=<nome>` filtra a máquina, sem lane
-devolve todas. Resultado vazio: o agente ainda não pollou (releia em 3–5 s) ou
-está offline (`conectado:false` — **Diga assim:** "fecha e abre de novo o
-programinha aí, ele parece ter desconectado").
+`results?since=X` devolve no máximo 100 itens. `lastId` é o próximo
+`since`. Vazio: o agente ainda não pollou (releia em 3–5 s) ou está
+offline. Duas máquinas: um `since` por lane.
 
-**Duas ou mais máquinas na mesma tarefa:** use `&lane=<nome>` no `/results` e
-guarde um `since` POR lane (variável `SINCE_MAQUINA_1=…`, `SINCE_MAQUINA_2=…`).
-O campo `lane` vem dentro de cada resultado para conferência. O `ponte.py`
-resolve isso sozinho (baseline por lane).
-
-Com Python na sua VM, o `ponte.py` enfileira, espera e imprime o resultado:
+Com Python, prefira o `ponte.py` (lane, baseline e pedaços ficam resolvidos):
 
 ```bash
-# ONDE: no seu servidor/VM (pasta operador/ do repo)
 export PONTE_URL=https://URL_DA_PONTE
 export PONTE_ADMIN_TOKEN=o-token-de-admin
-export PONTE_LANE=maquina_1        # a máquina alvo — OBRIGATÓRIA
-python3 ponte.py ping              # espera o resultado e imprime o JSON
+export PONTE_LANE=maquina_1
+python3 ponte.py ping
 python3 ponte.py '<ação>' '<args-json>'
-python3 ponte.py enviar <arquivo-local> <destino-absoluto-remoto>   # write_binary
-python3 ponte.py pegar <origem-absoluta-remota> <arquivo-local>     # read_binary (segue os pedaços sozinho)
-python3 ponte.py --status          # o mesmo JSON do /status
-python3 ponte.py --drain           # lê resultados pendentes
-PONTE_WAIT_S=300 python3 ponte.py ...   # espera mais (modo supervisionado)
+python3 ponte.py enviar <local> <destino-absoluto-remoto>
+python3 ponte.py pegar <origem-absoluta-remota> <local>
+python3 ponte.py --status
+python3 ponte.py --drain
 ```
 
-Tem Python na sua VM? **Prefira o `ponte.py` ao curl cru** — lane, baseline e
-pedaços ficam resolvidos sozinhos; curl é o fallback universal.
+Esperas: ações genéricas usam `PONTE_WAIT_S` (padrão 150 s, cobre a caixa
+s/N). `enviar` espera 60 s fixos. `pegar` espera 60 s por pedaço.
+`--drain` corta em 3.000 caracteres. `enviar` sobrescreve (o antigo vai
+para a lixeira).
 
-As esperas são DIFERENTES por caminho: ações genéricas (`ping`, `list`…)
-esperam `PONTE_WAIT_S` (padrão 150 s — cobre os 60 s da caixa s/N do modo
-supervisionado mais a execução); `enviar` espera 60 s FIXOS (ignore o
-`PONTE_WAIT_S`); `pegar` espera 60 s POR PEDAÇO. E: `--drain` imprime cada
-resultado truncado em 3.000 caracteres (payload completo é no `/results`);
-`enviar` SEMPRE sobrescreve o destino (o antigo vai para a lixeira).
+Resultado não veio, nesta ordem:
 
-**Conectado, mas o resultado não vem — playbook, nesta ordem:**
+1. `/status` → `pending` da lane. Pendente com menos de 24 h entrega no
+   reconnect.
+2. Não reenvie às cegas. Lease de 120 s reentrega sozinho. Reenvio é
+   execução dupla. Resultado repetido volta `duplicado:true`, mas a
+   máquina executa de novo.
+3. "Resultado grande demais (>10,5 MB)": `maxBytes` menor, uma pasta por vez.
+4. `data` com `_cortado` é histórico depois de restart. O ao vivo é íntegro.
+5. `TEMPO ESGOTADO` com agente conectado: `npx ponte-local skill troubleshooting`.
 
-1. `/status` → `pending` da lane: quantos comandos estão na fila (não mostra
-   quais). Pendente <24h é entregue no reconnect; mais velho que isso é
-   descartado.
-2. Não reenvie às cegas: o comando em execução que não confirmou resultado
-   re-entrega sozinho após 120 s (lease) — reenvio duplicado é execução
-   dupla. (Se precisar reenviar MESMO assim, o relay trata resultado repetido
-   como idempotente: `{"ok":true,"duplicado":true}` — mas a máquina executa
-   de novo.)
-3. Erro "Resultado grande demais (>10,5 MB)" → refine: `maxBytes` menor, uma
-   pasta de cada vez.
-4. `data` veio `{"_cortado":...}` → é resultado do HISTÓRICO lido após um
-   restart do relay (o snapshot em disco corta payloads grandes; os entregues
-   em tempo real são sempre íntegros). Releia ao vivo ou refaça o comando.
-5. Baseline do `ponte.py` (`TEMPO ESGOTADO` com agente conectado): veja § 7.
+Ações: não decore a tabela. `npx ponte-local acoes` e
+`npx ponte-local acoes <nome>`. Corpo: `{"lane","action","args"}`.
+`search`, `tree`, `disk_usage` e `duplicates` pulam `node_modules`, `.git`,
+`.cache` e afins — "não achou" não é "não existe".
 
-### 4.2 As ações
+Ler arquivo, em qualquer tamanho: `file_info`, depois `read_text` seguindo
+`proximoOffset` (encoding por extenso, `windows-1252`, não `cp1252`), ou
+`read_binary` juntando o base64 na ordem. `ponte.py pegar` faz o binário
+sozinho. Receita completa: `npx ponte-local skill arquivos`.
 
-Envie por `POST /api/ponte/cmd` com header `x-ponte-admin`, corpo
-`{"lane":"maquina_1","action":"...","args":{...}}` — ou via `ponte.py`. No
-Windows os caminhos das ações viram `C:\Users\usuario\...`; o agente aceita
-ambos os estilos conforme o SO dele.
-
-| Ação | Args (JSON) | O que faz |
-|------|-------------|-----------|
-| `ping` | `{}` | Specs e estado: CPU, RAM, Node, usuário, máquina, modo (`modoDeus`, `godModeDeclined`), versão da skill (`skill`) |
-| `list` | `{"path":"C:\\Users\\u\\Downloads"}` | Lista pasta (nome, pasta?, bytes, mtime); pagina com `offset`/`limit` (400 por página, limite 2.000, teto de 4.000 itens por pasta) |
-| `tree` | `{"path":"...","depth":2}` | Árvore (profundidade máx. 4) |
-| `read_text` | `{"path":"...","offset":0,"maxBytes":200000,"encoding":"auto"}` | Texto de QUALQUER tamanho em pedaços (≤ 2 MB/pedaço, padrão 200 KB); detecta utf-8/windows-1252/utf-16/latin1 (o nome é por extenso — `"encoding":"cp1252"` é recusado); siga `proximoOffset` até `null` |
-| `write_text` | `{"path":"...","content":"...","overwrite":true}` | Cria/sobrescreve (≤ 1 MB; antigo → lixeira) |
-| `search` | `{"path":"...","query":"termo","mode":"name"\|"content"}` | Busca por nome — casa no CAMINHO COMPLETO, não só no nome do arquivo — (padrão 300 hits) ou conteúdo (200) — teto 500 via `max`; pula arquivos > 2 MB, binários e vazios |
-| `mkdir` | `{"path":"..."}` | Cria pasta(s) |
-| `move` | `{"from":"...","to":"..."}` | Move/renomeia |
-| `rename` | `{"path":"...","newName":"novo.ext"}` | Renomeia no mesmo lugar |
-| `delete` | `{"path":"..."}` ou `{"paths":["...","..."]}` | Move para a lixeira do agente (recuperável); recusa apagar a home inteira |
-| `restore` | `{"trashName":"..."}` | Restaura da lixeira no lugar original (use o `trashName` devolvido) |
-| `organize_plan` | `{"path":"/home/u/Downloads"}` | Propõe plano de organização por tipo (NÃO executa!) |
-| `apply_plan` | `{"plan":[{"de":"/a/b.txt","para":"/c/b.txt"}]}` | Executa movimentos em lote — mostre o plano antes (Lei: destrutivo = confirmado) |
-| `undo_last` | `{}` | Desfaz a última operação (lixeira/lote) |
-| `free_space` | `{}` | Espaço livre/total dos discos |
-| `disk_usage` | `{"path":"...","depth":2}` | Tamanho por subpasta |
-| `duplicates` | `{"path":"...","minSizeBytes":1048576}` | Duplicados (tamanho→md5) + espaço recuperável (default de `minSizeBytes`: 1024) |
-| `read_binary` | `{"path":"...","offset":0,"maxBytes":4194304}` | Binário em base64 por pedaços (≤ 6 MB/pedaço; padrão 4 MB em arquivos grandes) — junte os base64 NA ORDEM |
-| `file_info` | `{"path":"..."}` | Tipo REAL por magic bytes (png, jpeg, pdf, zip, exe, mp4, sqlite, gzip, iso…) + tamanho + encoding se for texto |
-| `write_binary` | `{"path":"...","base64":"...","overwrite":true}` | Grava binário (máx 8 MB) |
-| `screenshot` | `{"format":"png","quality":85}` | Print da TELA INTEIRA, em base64 (`dados`). `format`: `png` (padrão) ou `jpg` (bem menor — use em tela grande). Linux: usa o que a distro já tem (import/scrot/maim/gnome-screenshot/spectacle/grim); Windows: PowerShell + System.Drawing (nativo); macOS: screencapture; Termux: termux-screenshot |
-| `screenshot_window` | `{"window_title":"Firefox","window_class":"","window_id":"","format":"png"}` | Print de UMA janela. Sem argumento: a janela em foco. Por `window_title`/`window_class`/`window_id`: no X11 e no Windows a janela exata; no Wayland o compositor não expõe isso, então a IA recebe a janela em foco e a resposta avisa (`janela.aviso`) |
-| `mouse_position` | `{}` | Onde está o cursor agora: `{x, y}` + `larguraTela`/`alturaTela` quando a ferramenta sabe |
-| `mouse_move` | `{"x":1200,"y":800}` | Move o cursor para (x, y) — não clica |
-| `mouse_click` | `{"x":1200,"y":800,"button":"left","count":1}` | Clica em (x, y). `button`: `left` (1), `middle` (2), `right` (3). `count`: cliques repetidos (duplo = 2) |
-| `mouse_scroll` | `{"amount":3,"direction":"down"}` | Rola. `direction`: `up`, `down`, `left`, `right`; `amount`: notches (padrão 3) |
-| `mouse_drag` | `{"x":100,"y":100,"x2":800,"y2":600}` | Arrasta de (x, y) até (x2, y2) com o botão pressionado |
-| `keyboard_type` | `{"text":"ola mundo"}` | Digita texto no teclado do usuário (base64 não, é texto puro). O texto passa pela MESMA trava anticatástrofe do `run_command`: digitar `rm -rf /` num terminal é tão destrutivo quanto executar, e é recusado. TAB dentro do texto é recusado (no shell ele completa o comando e a trava não veria o resultado) |
-| `keyboard_key` | `{"key":"enter"}` | Dispara uma tecla ou atalho: `enter`, `backspace`, `delete`, `escape`, `space`, `up`/`down`/`left`/`right`, `home`/`end`, `pageup`/`pagedown`, `f1`..`f12`, e combinações como `ctrl+c`, `ctrl+shift+t`. **Colar (`ctrl+v`, `shift+insert`), TAB e atalhos destrutivos são bloqueados** |
-| `run_command` | `{"command":"...","cwd":"C:\\Users\\u","timeoutMin":3}` | Shell — exige modo habilitado (§ 4.4) |
-| `god_mode` | `{"enabled":true}` / `{"enabled":false}` / `{"declined":true}` | Protocolo da Lei 3 |
-| `skill_update` | `{}` | Força a atualização do PACOTE INTEIRO da skill (spec principal, variante da máquina, manual do usuário e recursos novos — via o manifesto do repo). Roda sozinho no boot e a cada 60 s |
-| `task_done` | `{"resumo":"..."}` | **Fecha a tarefa** (Lei 1) — ÚLTIMO comando de toda tarefa |
-
-`search`, `tree`, `disk_usage` e `duplicates` **pulam por desenho** as pastas
-`node_modules`, `.git`, `.cache`, `cache`, `.thumbnails`, `Trash`, `.steam`,
-`.var`, `snap`, `__pycache__`, `.cargo`, `.rustup`, `.npm`, `Cache`,
-`Code Cache`: "não achou" NÃO é "não existe" — em dúvida, `list` direto na
-pasta suspeita.
-
-Resposta de cada comando: `{"id","ok","data"|"error","durationMs","ts"}`.
-
-### 4.3 Ler qualquer arquivo — formato e tamanho
-
-Não existe "arquivo grande demais" nem "formato desconhecido". A receita, igual
-no Linux e no Windows:
-
-1. **Pergunte o que é:** `file_info` → tipo real, tamanho e, se for texto, o
-   encoding detectado.
-2. **Texto:** `read_text` (≤ 2 MB/pedaço, padrão 200 KB) e siga
-   `proximoOffset` até `null` — cada resposta traz `encoding`, `lidos`,
-   `truncado`, `caracteres`. Encoding não-utf-8? Passe `"encoding"` explícito
-   nos pedaços seguintes (a `dica` da resposta avisa; o nome é por extenso:
-   `windows-1252`, não `cp1252`).
-3. **Binário:** `read_binary` (≤ 6 MB/pedaço, padrão 4 MB) com
-   `{"offset": proximoOffset}` e junte os `base64` NA ORDEM — ou deixe o
-   `ponte.py pegar` fazer isso sozinho. Arquivos até 6 MB vêm inteiros numa
-   chamada.
-4. `read_text` em binário NÃO devolve lixo: responde
-   `{"provavelBinario":true,"tipo":"png",...}` — mude para
-   `read_binary`/`file_info`. utf-16 sem BOM é marcado como binário — use
-   `file_info` + `encoding` explícito.
-
-Exemplo — confirmar o formato de um vídeo de 2 GB e espiar o header:
-
-```json
-{"action":"file_info","args":{"path":"C:\\Users\\u\\Videos\\a.mp4"}}
-{"action":"read_binary","args":{"path":"C:\\Users\\u\\Videos\\a.mp4","maxBytes":65536}}
-```
-
-### 4.4 `run_command` — os 4 estados (escalada é FÍSICA)
+### 4.4 `run_command` — os 4 estados (escalada é física)
 
 | Estado | Como chega lá | Comportamento |
-|--------|---------------|---------------|
-| Desligado (padrão) | `npx ponte-local start` | `run_command` negado (o erro ensina as receitas); só operações de arquivo |
-| Supervisionado | usuário religa com `npx ponte-local start --allow-run --save` | caixa s/N no terminal DELE, 60 s; **sem resposta = auto-rejeita** (erro "Você rejeitou o comando no terminal") |
-| Autônomo | usuário religa com `npx ponte-local start --auto --save` | executa direto, log `[AUTO] $ cmd`; trava anticatástrofe ativa |
-| **modo deus** | a IA pergunta NO CHAT após conectar; aceite → `god_mode {"enabled":true}` | igual ao autônomo (log `[deus] $ cmd`); trava, lixeira e log continuam; o aceite vale mesmo sem flag no terminal |
-
-Trocar de modo (exceto modo deus, que é conversacional) exige o usuário
-religar o agente no terminal DELE. **Diga assim:** "Ctrl+C no terminal do
-agente e roda `npx ponte-local start --auto --save` — isso me dá execução direta com a
-trava anticatástrofe, ok?" (no Windows, mesmo comando no PowerShell). ATENCAO: Fechar
-a janela do agente me corta o acesso — avise que é normal e rápido.
-
-ATENCAO: **O modo fica GRAVADO em `ponte.config.json` pelo `--save`.** Depois de
-`--auto --save`, religar com `npx ponte-local start` puro NÃO volta ao desligado — e
-`--allow-run --save` também não rebaixa (o `auto:true` persiste). Para
-rebaixar de verdade: edite o `ponte.config.json` na pasta do agente
-(`"auto": false` → supervisionado; `"run": false, "auto": false` → desligado)
-ou apague o arquivo e religue com as flags desejadas. **NUNCA tente
-`--auto=false`**: o parser lê a flag como presente e ATIVA o autônomo. E
-desligar o modo deus (`god_mode {"enabled":false}`) deixa o agente no modo
-autônomo gravado — não no supervisionado.
-
-Em modo supervisionado use `PONTE_WAIT_S=150` (ou mais) no `ponte.py`.
-**Diga assim (primeira caixa s/N):** "vai aparecer uma caixa pedindo
-confirmação aí no terminal — aperta `s` em até 60 segundos, ou `n` para
-negar."
-
-### 4.5 Sudo sem expor senha (Linux, só com autorização explícita)
-
-*(No Windows não há sudo: `run_command` roda com os privilégios do usuário do
-terminal.)*
-
-1. `write_text` → `/home/u/Downloads/.tmp-senha` com `content: "SENHA\n"`
-   (a senha viaja no corpo do comando, **nunca** dentro de um shell que vira log)
-2. `run_command` → `sudo -S bash -c 'COMANDO_REAL' < /home/u/Downloads/.tmp-senha`
-3. `run_command` → `rm -f /home/u/Downloads/.tmp-senha` (rm real via shell — a
-   ação `delete` iria para a lixeira e a senha ficaria recuperável!)
-
-NOPASSWD permanente só com pedido explícito do usuário, sempre validando:
-
-```bash
-sudo -S bash -c 'echo "usuario ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-nopasswd \
-  && chmod 440 /etc/sudoers.d/90-nopasswd \
-  && (visudo -c >/dev/null 2>&1 && echo OK || rm -f /etc/sudoers.d/90-nopasswd)' < .tmp-senha
-```
-
-## 5. Referência rápida
-
-**As três versões e onde ver cada uma:** relay → campo `version` do `/status`;
-agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version -->
-` no topo deste arquivo (o agente baixa a versão mais recente sozinho).
-
-**Dicionário do `/status`:**
-
-| Campo | Significado |
-|---|---|
-| `connected` | alguma lane conectada (global) |
-| `lanes.<lane>.conectado` | o agente da lane pollou nos últimos 45 s |
-| `lanes.<lane>.lastSeenAgoS` | segundos desde o último poll (`null` = nunca conectou) |
-| `lanes.<lane>.pending` | QUANTOS comandos estão na fila (não mostra quais) |
-| `lanes.<lane>.agentInfo` | specs anunciadas pelo ping (`.maquina` diz quem é quem) |
-| `lanes.<lane>.semToken` | lane histórica cujo token saiu do `.env` (histórico preservado) |
-| `totalCommands` / `totalResults` | contadores desde o estado mais antigo retido |
-| `uptimeS` / `version` | tempo de relay no ar / versão dele |
-
-**Códigos HTTP que você vai ver:**
-
-| Código | Onde | Significado |
 |---|---|---|
-| 401 | tudo, EXCETO `/api/ponte/download` (pública por desenho — o PC baixa o agent.js sem token) | token ausente/inválido (admin ou agente) |
-| 400 | `/cmd`, `/result`, `/results` | JSON inválido, ação/id/lane ausente ou inválida; no `/cmd`, **lane sem token** (a mensagem ensina: crie `PONTE_TOKEN_<SUFIXO>` e reinicie o relay) |
-| 403 | `/result` | resultado pertence a outra lane |
-| 404 | `/result` | resultado para comando desconhecido nesta lane |
-| 411 | `/cmd` | requisição chunked sem content-length |
-| 413 | `/cmd`, `/result` | corpo acima de 12 MB |
-| 429 | `/cmd` | fila da lane cheia (100) |
-| 503 | `/cmd` | persistência falhou — o comando não foi aceito; tente de novo |
+| Desligado (padrão) | `npx ponte-local start` | `run_command` negado; só arquivo |
+| Supervisionado | usuário religa com `--allow-run --save` | caixa s/N, 60 s; sem resposta = rejeita |
+| Autônomo | usuário religa com `--auto --save`, depois de aceitar no chat | executa direto, log `[AUTO]`; trava ativa |
+| Modo deus | Lei 3: só se ele pedir | igual ao autônomo, log `[deus]`; trava, lixeira e log continuam |
 
-**Limites técnicos:**
+Trocar de modo (exceto deus) é no terminal dele. Fechar a janela corta o
+acesso; avise que é rápido. O `--save` grava o modo: `start` puro depois
+de `--auto --save` **não** volta ao desligado, e `--allow-run --save`
+também não rebaixa. Para rebaixar, edite `ponte.config.json` (`"auto": false`
+é supervisionado; `"run": false, "auto": false` é desligado) ou apague o
+arquivo. Nunca use `--auto=false`: a flag conta como presente e liga o
+autônomo. Desligar o modo deus deixa o agente no modo que estava gravado.
 
-| Limite | Valor |
-|--------|-------|
-| Corpo de requisição (2 sentidos) | 12 MB |
-| Pedaço de `read_text` | 2 MB por chamada (padrão 200 KB) |
-| Pedaço de `read_binary` | 6 MB por chamada (padrão 4 MB em arquivos grandes) |
-| Tamanho do ARQUIVO lido | ilimitado via `read_binary` em pedaços; o `pegar` do ponte.py desiste por segurança após 200 pedaços (≈1,2 GB) e deixa o arquivo parcial |
-| `write_text` / `write_binary` | 1 MB / 8 MB |
-| Comando (`run_command.command`) | 4.000 caracteres |
-| Timeout por `run_command` | padrão 3 min; teto 30 min (`timeoutMin`) |
-| stdout/stderr de `run_command` | cortados em 150.000 caracteres cada (maxBuffer 8 MB — stdout maior mata o comando) |
-| Resultado total (agente) | recusado acima de ~10,5 MB ("refine o comando") |
-| `screenshot` / `screenshot_window` | base64 ≤ 9 MB — acima disso use `format:"jpg"` e `quality` menor |
-| `mouse_*` | coordenadas inteiras de -100.000 a 100.000; `count` de 1 a 10; `amount` de scroll de -1.000 a 1.000 |
-| `keyboard_type` | texto de até 4.000 caracteres; sem TAB; cada linha validada contra a trava |
-| `keyboard_key` | uma tecla ou combinação (`ctrl+shift+t`); colar e atalhos destrutivos bloqueados |
-| pacote da skill | manifesto `skill-manifest.json`; o agente baixa o pacote INTEIRO (tudo ou nada) e remove o que saiu da skill nova |
-| `resumo` do `task_done` | 4.000 caracteres |
-| Fila de comandos pendentes | 100 por lane |
-| Histórico de comandos / resultados | 2.000 / 400 |
-| Resultados por chamada `/results` | 100 |
-| Pendente na fila | entregue no reconnect se <24h; mais velho é descartado |
-| Lease de re-entrega (resultado não confirmado) | 120 s |
-| Janela "conectado" | 45 s sem poll |
-| Poll do agente | a cada 1,5 s |
-| Snapshot do relay | `.ponte-estado.json` (pendentes + resultados com data cortada em 200k; sobrevive a restart; `PONTE_DATA_DIR` muda a pasta) |
-| `list` | 400 itens por página (máx. 2.000) |
-| `tree` / `disk_usage` / `duplicates` | teto interno: 800 entradas (teto 3.000) / top 30 pastas / 200 grupos (top 100) |
-| `free_space` | precisa de `fs.statfs` (Node ≥ 18.15; Node 18.0–18.14 falha e o erro sugere `df -h`) |
-| `search` | 300 hits por nome (casa no caminho completo) / 200 por conteúdo; pula >2 MB, binários e vazios; pula `node_modules`, `.git`, `.cache`, `Trash`, `__pycache__`… |
-| Checagem da skill pelo agente | boot + a cada 60 s (ETag: nada mudou = HTTP 304, zero bytes); falha de rede = backoff até 15 min |
+No supervisionado use `PONTE_WAIT_S=150`. Avise a primeira caixa: aperta
+`s` em 60 s, ou `n` para negar.
 
-## 6. Manutenção
-
-- **Máquina nova:** linha nova `PONTE_TOKEN_<NOME>` no `.env` → **REINICIE o
-  relay** → entregue o bloco do § 3 (Passo 4) com o token dela → `conectado:true`.
-- **Token trocado/queimado:** gere (`openssl rand -hex 16`), troque no `.env`,
-  **REINICIE o relay**, e na máquina religue o agente com
-  `--token NOVO --save`. Lane antiga sem token não perde histórico (aparece
-  `semToken:true`).
-- **URL de preview mudou:** reenvie o bloco de instalação com a URL nova — o
-  `--save` regrava a config sozinho.
-- **Atualizar o agente (instalação `npx`):** é automático — o `npx` resolve
-  a versão mais nova do pacote a cada execução. Se o usuário quiser fixar:
-  `npx ponte-local start@1.19.0 ...`.
-- **Atualizar o agent.js na máquina (sem npm):** automático — o próprio agente
-  checa a cada 30 min, baixa a versão nova, valida com `node --check` e a
-  aplica no próximo boot (backup em `agent.js.bak`). Manual, se precisar:
-  `bash agente/atualizar.sh` (Linux/macOS/Termux) ou
-  `agente\atualizar.bat` (Windows).
-- **Atualizar o agente (instalação manual):** baixe o `agente/agent.js` novo
-  do repo, envie ao PC com `write_binary` para `~/Downloads/` (ou
-  `C:\Users\u\Downloads`), e lá:
-  `cp ~/Downloads/agent-vNOVO.js ~/ponte-agent/agent.js` (Windows: `copy`),
-  Ctrl+C no agente e religue no modo escolhido.
-- **Atualizar ESTA skill (na sua pasta de skills): desinstalação TOTAL
-  primeiro.** Vendo que existe `skill-version` maior, NÃO sobrescreva: apague a
-  pasta inteira da skill (SKILL.md e TODO arquivo auxiliar) e instale a nova
-  do repo do zero — sobra de versão antiga mistura instruções contraditórias.
-  Conferência final: só os arquivos da versão nova lá, e o marcador confere.
-  (No PC do usuário não precisa fazer nada: o agente baixa e aplica sozinho.)
-- **Cache do raw.githubusercontent:** logo após um commit novo, a versão nova
-  pode levar ~5 min a aparecer; o `skill_update` devolve erro elegante
-  ("skill remota sem marcador de versão") — tente de novo minutos depois.
-
-## 6.1 Publicar uma nova versão (o mantenedor do repo)
-
-O repo tem um script que faz o fluxo INTEIRO de release: bumpeia a versão,
-roda os testes, commita, cria a tag, faz push, **publica no npm** e cria a
-release no GitHub (com o `agent.js` anexado).
-
-```bash
-cd ~/Área\ de\ trabalho/ponte-local     # o repo
-./publicar.sh minor "adiciona a ação que_missing"
-./publicar.sh patch "corrige o X"
-./publicar.sh --dry-run minor "só pra ver"      # mostra o que faria
-```
-
-Credenciais: `npm` usa o `~/.npmrc`; `gh` usa `gh auth login` (ou
-`GH_TOKEN`). Release notes customizadas: copie
-`RELEASE_NOTES.exemplo.md` para `RELEASE_NOTES.md` e escreva o que quiser
-(a primeira linha vira o resumo do título). Sem ele, o corpo sai automático
-com os commits desde a última tag.
-
-**IMPORTANTE — o npm é um registry separado do GitHub:** commit e release
-NÃO atualizam o npm. Só o `npm publish` publica. Mas o `npx` revalida o
-registry a cada uso, então assim que publica, todo mundo que roda
-`npx ponte-local start` pega a versão nova sem reinstalar nada. A propagação
-demora ~5-20 min.
-
-**Regra de versão:** a versão do **agente** (e do npm) é `1.x.y`; a tag do
-**repo** é `v2.x.y`. Bump `patch` no agente → bump `patch` na tag; bump
-`minor`/`major` → bump `minor` na tag.
-
-## 7. Troubleshooting
-
-| Sintoma | Causa | Correção |
-|---------|-------|----------|
-| `Lane "x" sem token — crie PONTE_TOKEN_… e reinicie o relay` (400 no /cmd) | lane inexistente, token não carregado, ou sufixo > 32 caracteres (descartado em silêncio) | crie a linha no `.env` e **REINICIE o relay**; nome com `-` nunca nasce de env — use `_`; encurte o sufixo |
-| 401 na validação com o `.env` aparentemente certo | comentário inline após o valor (`TOKEN=valor # nota`) suja o `cut` do header | tire o comentário da linha do valor, reexporte o token, teste de novo |
-| `Comando vazio` no `run_command` | chave errada no args | a chave é **`command`**, não `comando` |
-| `Pasta protegida no caminho` | caminho relativo resolveu contra o CWD do agente (a pasta dele é bloqueada), ou pasta sensível (`.ssh`, `.config`, …) | use **caminho absoluto** (`/home/u/...` ou `C:\Users\u\...`); pasta sensível é bloqueada mesmo absoluta — respeite |
-| `Arquivo protegido (credenciais/config do agente)` | o arquivo é config/log do próprio agente ou credencial conhecida (`.env`, `.npmrc`, …) | não é para ler mesmo; peça o que precisa ao usuário por outro caminho |
-| PowerShell: "o termo curl não é reconhecido" ou resposta HTML | `curl` sem `.exe` virou `Invoke-WebRequest` | use **`curl.exe`** (com a extensão) |
-| PowerShell: "o termo node não é reconhecido" logo após instalar o Node | PATH novo não entra em janelas já abertas | feche TODAS as janelas do PowerShell, abra uma nova e repita |
-| Agente não conecta (`conectado:false`) | URL/token errados, relay sem o token no `.env`, ou agente fechado | confira `--server`, confira `.env` + restart do relay, religue o agente |
-| `node agent.js` no PC falha com SyntaxError (instalação manual) | o `curl -o agent.js` gravou um JSON de erro (rota `/download` 404) | copie `agente/agent.js` para `download/ponte-agent/` no relay; valide com `curl -fsS URL/api/ponte/download \| head -c 40` |
-| Local responde, público dá connection refused | relay subiu em outra porta (ex.: `PORT=3001`) e os curls/túnel apontam 3000 | alinhe a porta em TODOS os comandos (e no túnel) |
-| Ponte morreu sozinha horas depois | túnel efêmero (trycloudflare) mudou de URL ou morreu | reerga o túnel e religue o agente com `--server NOVA_URL --save` |
-| `TEMPO ESGOTADO` com agente conectado | baseline do operador maior que os ids da instância nova | apague `.ponte_since_<nome-da-lane>` na pasta do `ponte.py` (ou em `PONTE_STATE_DIR`, se definido) |
-| `TEMPO ESGOTADO` em modo supervisionado | prompt s/N + execução passaram da espera do operador | reenvie com `PONTE_WAIT_S=150+` (sem resposta na caixa, o agente auto-rejeita com erro próprio) |
-| `Você rejeitou o comando no terminal (resposta: n)` | ninguém confirmou a caixa s/N em 60 s | reenvie; **Diga assim:** "vai aparecer a caixa de novo — aperta `s` quando ela vier" |
-| Religuei com `npx ponte-local start` e ele segue executando sozinho | modo gravado no `ponte.config.json` pelo `--save` | edite o config (`"auto": false`) ou apague-o e religue com as flags desejadas; NUNCA `--auto=false` (ativa!) |
-| `Fila de comandos cheia` (429) | agente offline/travado acumulando além de 100 | religue o agente — pendentes <24h drenam sozinhos no reconnect |
-| Agente Windows "congela" com a janela normal | QuickEdit do console: clique dentro da janela congela o stdout | rode pelo `rodar.bat` (log em arquivo + QuickEdit off); `watchdog.bat` religa sozinho |
-| Relay reiniciou e perdeu fila/histórico | relay < 1.2.0 (estado só em RAM) | atualize o `relay/` do repo: snapshot em `.ponte-estado.json` sobrevive a restart |
-| `Fora do escopo` | caminho fora da home | só a home do usuário é permitida (Linux `/home/u/**`; Windows `C:\Users\u\**`) |
-| Pedaço de leitura falha | pedaço > 6 MB (`read_binary`) ou > 2 MB (`read_text`) | o ARQUIVO pode ter qualquer tamanho — reduza só o `maxBytes` do pedaço |
-| Comando some após rebuild do relay | URL de preview mudou | religue o agente com `--server NOVA_URL --save` |
-
-## 8. Segurança e privacidade
-
-- **Escopo: a home do usuário.** Caminhos relativos resolvem contra o CWD do
-  agente (tipicamente `~/ponte-agent`) — use sempre caminho absoluto.
-- **Pastas sensíveis bloqueadas** (mesmo dentro da home): `.ssh`, `.gnupg`,
-  `.config`, `.password-store`, `.aws`, `.kube`, `.docker`, `.mozilla`,
-  `keyrings`, a pasta `ponte-agent`, e arquivos de credencial conhecidos
-  (`.env`, `.npmrc`, `.netrc`, `.git-credentials`, `.wgetrc`, `.pypirc`,
-  `.htpasswd`). Config e log do agente são bloqueados por caminho real (a
-  rotação do log, `ponte-log.jsonl.old`, também) e a config nasce 0600.
-- **Exclusão vai para a lixeira interna** do agente (XDG
-  `~/.local/share/Trash`, também no Windows) com `undo_last` — **não é** a
-  Lixeira do Windows. **Diga assim, se ele perguntar:** "eu apago para uma
-  lixeira interna do programinha, dá para desfazer — a Lixeira do Windows não
-  é usada."
-- **Log:** tudo que o agente executa fica em `ponte-log.jsonl` na pasta dele.
-- **Token sem aparecer no `ps`/histórico do shell:**
-  `PONTE_AGENT_TOKEN=… node agent.js --server URL` (a env só vale se a config
-  ainda não tem token; `--home` troca a pasta base do agente).
-- **O `.gitignore` do repo já cobre** `.env`, `.ponte-estado.json`,
-  `.ponte-seq`, `ponte-log.jsonl*`, `__pycache__/` e `*.pyc`. Se você usar
-  `worklog.md`, `db/` ou logs próprios no seu fork, adicione-os ANTES do
-  primeiro push (Lei 5).
+Sudo sem deixar senha em log: `npx ponte-local skill sudo`.
 
 ## Apêndice A — Operar uma ponte que já existe (sem hospedar)
 
-A ponte é API HTTP pura: com a **URL pública** e o **ADMIN_TOKEN** (peça a
-quem instalou), qualquer IA com `curl` opera de qualquer lugar. Valide e siga
-a mesma régua do capítulo 4:
+Com a URL pública e o `ADMIN_TOKEN`, qualquer IA opera por `curl`. Não
+gere token e não suba relay.
 
 ```bash
 export PONTE_URL=https://A-URL
 export PONTE_ADMIN_TOKEN=o-token-de-admin
 
-curl -s $PONTE_URL/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"  # quem está conectado
+curl -s $PONTE_URL/api/ponte/status -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"
 curl -s -X POST $PONTE_URL/api/ponte/cmd \
   -H "x-ponte-admin: $PONTE_ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"lane":"maquina_1","action":"ping","args":{}}'
-curl -s "$PONTE_URL/api/ponte/results?since=76&lane=maquina_1" \
+curl -s "$PONTE_URL/api/ponte/results?since=0&lane=maquina_1" \
   -H "x-ponte-admin: $PONTE_ADMIN_TOKEN"
 ```
 
-As 5 Leis, a tabela de ações e os limites valem igual. Para uso permanente
-independente de plataforma, hospede o relay num serviço com domínio fixo
-(VPS, Render, Railway, Fly.io) e a URL nunca mais muda. O `RESTAURAR.md`
-cobre a RECONSTRUÇÃO no preview (a VM reseta e perde tudo); em VPS o desenho é
-o mesmo — Node 18+, `.env` com os `PONTE_TOKEN_*`, `PONTE_DATA_DIR` para o
-estado, HTTPS/domínio por conta do serviço — e as validações do Passo 3 valem
-iguais.
+As 5 leis valem igual. Para a URL não mudar, o relay precisa de domínio
+fixo (VPS, Render, Railway, Fly.io). Reconstruir um preview que resetou:
+`relay/RESTAURAR.md`.
 
-## Apêndice B — O que o usuário vê no terminal
+## Onde está o resto
 
-No boot, arte **PONTE AGENTE** em blocos (terminal Linux UTF-8 e
-cmd/PowerShell do Windows 10+ com fonte Consolas; janela estreita (<65
-colunas) ou console antigo → banner ASCII — no Windows também com log de app;
-no Linux com saída redirecionada o banner Unicode é mantido). Toda ação em
-andamento mostra um spinner `⠏ rodando: <rótulo> (Ns)` (ASCII `|/-\` no cmd).
-Ao fim de cada `run_command`, uma caixa `output` com stdout, stderr e código
-de saída (truncada em 60/30 linhas — a IA continua recebendo o JSON completo;
-o corte é só visual). Sem TTY (saída redirecionada), o spinner fica desligado.
-Nada disso muda o protocolo nem os payloads.
+| Preciso de | Comando |
+|---|---|
+| Relay, tokens, lane | `npx ponte-local skill relay` |
+| URL pública e túnel | `npx ponte-local skill url` |
+| Instalar no PC (npx e manual) | `npx ponte-local skill instalacao` |
+| Teclado / mouse / bloco por SO | `npx ponte-local skill teclado` ou `skill mouse` |
+| Tabela de ações | `npx ponte-local acoes` |
+| Ler arquivo grande | `npx ponte-local skill arquivos` |
+| Sudo | `npx ponte-local skill sudo` |
+| Limites, manutenção, publicar | `npx ponte-local skill referencia` |
+| Erro concreto | `npx ponte-local skill troubleshooting` |
+| Escopo, lixeira, pastas bloqueadas | `npx ponte-local skill seguranca` |
+| O que aparece no terminal dele | `npx ponte-local skill terminal` |
+
+Arquivos: `references/instalacao.md`, `references/acoes.md`,
+`references/comando.md`, `references/referencia.md`.

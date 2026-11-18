@@ -24,7 +24,7 @@ description: >-
 > agente na máquina do usuário. A skill VIVA — a que o agente baixa do repo
 > (boot + a cada 60 s) e a que ensina a instalar/operar hoje — é a **SKILL.md
 > da RAIZ do repo** (`skill-version` 4.x). NÃO siga daqui: (a) os blocos de
-> instalação sem `--auto` (a raiz entrega com `--auto --save`); (b) os tokens
+> instalação (a raiz 4.7 entrega SEM `--auto`; autônomo só com aceite no chat); (b) os tokens
 > exportados no shell (`PONTE_TOKEN_*` de terminal — hoje nascem no `.env` do
 > relay, com restart); (c) as "4 Leis + 13 regras" (a raiz tem 5 Leis, com
 > numeração própria); (d) os limites antigos. Se você é uma IA escolhendo qual
