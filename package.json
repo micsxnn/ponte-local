@@ -37,6 +37,7 @@
     "NOTICE.md",
     "SECURITY.md",
     "SKILL.md",
+    "references/",
     "skill-manifest.json",
     "agente/atualizar.bat"
   ],

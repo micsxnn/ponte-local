@@ -337,8 +337,8 @@ config. Ela só lê a spec e monta os comandos que manda pro relay.
 | Comando | Onde roda | O que devolve |
 |---|---|---|
 | `npx ponte-local start` | PC do usuário | um banner e um agente rodando (nada é "devolvido" para a IA por esse comando) |
-| `npx ponte-local skill` | VM da IA | a spec completa, em texto |
-| `npx ponte-local acoes` | VM da IA | as 31 ações, com args e descrição |
+| `npx ponte-local skill` | VM da IA | a spec de entrada; seções longas via `skill <secao>` |
+| `npx ponte-local acoes` | VM da IA | o manual das ações, com args e descrição |
 | `POST /api/ponte/cmd` | via relay | o que a IA **manda** pro PC |
 | `GET /api/ponte/results` | via relay | o que a IA **recebe** do PC |
 
@@ -377,7 +377,7 @@ E o lado **agente** (na VM da IA — só leitura):
 
 ```bash
 npx ponte-local skill                       # a especificação da skill
-npx ponte-local acoes                       # o manual das 31 ações
+npx ponte-local acoes                       # o manual das ações
 ```
 
 **Onde os dados ficam** (fora do pacote — o cache do `npx` é efêmero e o
