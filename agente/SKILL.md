@@ -463,7 +463,7 @@ agente não se troca em execução — avisa para reiniciar:
 
 ```
   ┌──────────────────────────────────────────────┐
-  │  Nova versao do agente: v1.19.0              │
+  │  Nova versao do agente: v1.20.0              │
   └──────────────────────────────────────────────┘
     Baixada e validada. Reinicie o agente para usar.
 ```

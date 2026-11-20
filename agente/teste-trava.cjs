@@ -109,9 +109,9 @@ if (typeof caminhoProtegido !== "function") {
   }
 }
 
-if (mod.VERSION !== "1.19.0") {
+if (mod.VERSION !== "1.20.0") {
   falhas++;
-  console.log("FALHOU: VERSION deveria ser 1.19.0, é %s", mod.VERSION);
+  console.log("FALHOU: VERSION deveria ser 1.20.0, é %s", mod.VERSION);
 }
 
 console.log(falhas === 0 ? "PASSOU — trava íntegra (%d vetores de bloqueio + %d de passagem)" : "RESULTADO: %d FALHA(S)", falhas === 0 ? BLOQUEAR.length : falhas, PASSAR.length);

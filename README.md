@@ -16,7 +16,7 @@ npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
 [![npm](https://img.shields.io/npm/v/ponte-local?label=npm&color=cb3837)](https://www.npmjs.com/package/ponte-local)
-[![Agente](https://img.shields.io/badge/agente-v1.19.0-3fb950)](agente/agent.js)
+[![Agente](https://img.shields.io/badge/agente-v1.20.0-3fb950)](agente/agent.js)
 [![Relay](https://img.shields.io/badge/relay-v1.5.2-3fb950)](relay/ponte-store.ts)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-3fb950)](https://nodejs.org)
 [![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows%20%7C%20Termux-f59e0b)](#requisitos)
@@ -192,7 +192,7 @@ avisa no terminal:
 
 ```
   ┌──────────────────────────────────────────────┐
-  │  Nova versao do agente: v1.19.0              │
+  │  Nova versao do agente: v1.20.0              │
   └──────────────────────────────────────────────┘
     Baixada e validada. Reinicie o agente para usar.
 ```
@@ -544,7 +544,8 @@ ponte-local/
 
 | Componente | Versão | O que trouxe |
 |------------|--------|--------------|
-| Agente | **v1.19.0** (atual) | Auto-update do **agente** (o `agent.js` agora se atualiza sozinho, como a skill): checa a cada 30 min, baixa, valida com `node --check` e prepara a versão nova — que entra no próximo boot, com backup. Node puro, funciona igual no Linux (qualquer distro), Windows, macOS e Termux. Novo `agente/atualizar.bat` (o Windows não tinha caminho manual) |
+| Agente | **v1.20.0** (atual) | **`command_stop`**: mata o comando em execução (grupo de processos no POSIX, árvore no Windows) — build travado, servidor que não volta. Corrige também o `ReferenceError` em `run_command` quando o comando falhava (stdout/stderr/exitCode agora chegam à IA) e o TDZ do `child` no callback `fim` |
+| Agente | v1.19.0 | Auto-update do **agente** (o `agent.js` agora se atualiza sozinho, como a skill): checa a cada 30 min, baixa, valida com `node --check` e prepara a versão nova — que entra no próximo boot, com backup. Node puro, funciona igual no Linux (qualquer distro), Windows, macOS e Termux. Novo `agente/atualizar.bat` (o Windows não tinha caminho manual) |
 | Agente | v1.18.0 | Auditoria de seguranca: **17 bypasses da trava anticatastrofe fechados** (glob no `rm`, `mv` destrutivo, `sudo` com flags, shell dentro de shell, `eval`, interpretadores com codigo inline, leitura de credenciais, alvos de sistema que faltavam, atalhos do Windows) + **9 bugs de corretude** (comando perdido no relay, comando executado duas vezes, token vazando no `run_command`, `search` lendo `.env`, `npx --server` quebrado, `atualizar.sh` que nunca atualizava) |
 | Agente | v1.17.0 | Skill como **pacote inteiro**: um manifesto no repo lista tudo o que deve estar na máquina (spec, variante da máquina, manual e recursos novos). O agente baixa o pacote inteiro sozinho, no boot e a cada 60 s; `npx ponte-local update` faz o mesmo lado do usuário e também traz o `agent.js` novo. Arquivo novo da skill chega sem mudar código; o que sai da skill nova é removido |
 | Agente | v1.16.0 | `keyboard_type` (digita texto) e `keyboard_key` (dispara atalhos): a IA mexe no teclado do usuário (Windows/Linux/macOS/Termux, zero dependência npm). O texto digitado passa pela mesma trava anticatástrofe do `run_command`; colar (ctrl+v) e atalhos destrutivos são bloqueados |
