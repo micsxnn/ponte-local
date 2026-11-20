@@ -1,4 +1,0 @@
-chore: remove COMMIT_MSG.tmp do repo e ignora o arquivo
-
-O arquivo de mensagem de commit entrou versionado por accident (foi criado
-antes do git add). Agora vai para o .gitignore.
