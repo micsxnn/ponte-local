@@ -47,6 +47,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const readline = require("readline");
+const crypto = require("crypto"); // v1.20.2: integridade (sha256 do manifesto)
 
 // ---- caminhos ABSOLUTOS baseados no pacote (nunca no CWD) --------------
 const PKG_DIR = path.resolve(__dirname, ".."); // raiz do pacote instalado
@@ -613,12 +614,22 @@ async function cmdUpdate(args) {
       for (const item of manifesto.arquivos) {
         const origem = String(item && item.origem ? item.origem : "");
         const destino = String(item && item.destino ? item.destino : "");
+        const hashEsperado = String(item && item.sha256 ? item.sha256 : "");
         if (!origem || !destino) continue;
         const destinoAbs = path.resolve(DATA_DIR, destino);
         if (!destinoAbs.startsWith(path.resolve(DATA_DIR) + path.sep))
           throw new Error("destino invalido no manifesto: " + destino);
         const r = await httpsGet(REPO_BASE + origem);
         if (r.status !== 200) throw new Error("HTTP " + r.status + " ao baixar " + origem);
+        // v1.20.2: integridade — o hash do manifesto tem que bater com o
+        // arquivo baixado (o manifesto traz sha256 por arquivo desde a v4.7.0)
+        if (hashEsperado) {
+          const hashBaixado = crypto.createHash("sha256").update(r.texto).digest("hex");
+          if (hashBaixado !== hashEsperado)
+            throw new Error(
+              "hash invalido para " + origem + " (esperado " + hashEsperado + ", baixado " + hashBaixado + ") — nada foi trocado"
+            );
+        }
         const tmp = path.join(stage, destino);
         fs.mkdirSync(path.dirname(tmp), { recursive: true });
         fs.writeFileSync(tmp, r.texto, "utf8");
@@ -663,6 +674,18 @@ async function cmdUpdate(args) {
 
     // ---- 5) aplica o agent.js (por ultimo: e o programa que roda) ----
     if (agenteNovo) {
+      // v1.20.2: integridade — o manifesto tambem traz o hash do agent.js
+      const itemAgente = (manifesto.arquivos || []).find(
+        (i) => i && (i.destino === "agent.js" || i.origem === "agente/agent.js")
+      );
+      if (itemAgente && itemAgente.sha256) {
+        const hashAg = crypto.createHash("sha256").update(aResp.texto).digest("hex");
+        if (hashAg !== itemAgente.sha256)
+          throw new Error(
+            "hash do agent.js nao confere com o manifesto (esperado " +
+              itemAgente.sha256 + ", baixado " + hashAg + ") — nada foi trocado"
+          );
+      }
       atomicWrite(agenteDestino, aResp.texto);
       try {
         fs.chmodSync(agenteDestino, 0o755);
