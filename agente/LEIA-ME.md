@@ -243,7 +243,7 @@ boot** ela entra em vigor (o anterior fica como `agent.js.bak`).
 
 ```
   ┌──────────────────────────────────────────────┐
-  │  Nova versao do agente: v1.20.0              │
+  │  Nova versao do agente: v1.20.1              │
   └──────────────────────────────────────────────┘
     Baixada e validada. Reinicie o agente para usar.
 ```

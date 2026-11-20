@@ -44,6 +44,34 @@ const BLOQUEAR = [
   ["fdisk /dev/sda", ctxLin, "v1.16.0: particionador de disco"],
   ["parted /dev/sda mklabel gpt", ctxLin, "v1.16.0: parted em dispositivo"],
   ["sgdisk /dev/nvme0n1", ctxLin, "v1.16.0: sgdisk em dispositivo"],
+  // ---- v1.20.1: auditoria de seguranca (furos reais, achados por sonda) ----
+  // indirecao: o comando destrutivo NAO e o primeiro token do segmento
+  ["busybox rm -rf /", ctxLin, "v1.20.1: alias busybox esconde o rm"],
+  ["busybox rm -rf ~", ctxLin, "v1.20.1: alias busybox esconde o rm na home"],
+  ["r=rm; $r -rf /", ctxLin, "v1.20.1: comando via variavel"],
+  ["cmd=rm; $cmd -rf /*", ctxLin, "v1.20.1: comando via variavel com glob"],
+  ["R=rm; ${R} -rf /", ctxLin, "v1.20.1: comando via variavel entre chaves"],
+  // loops de shell: o corpo esconde o comando destrutivo
+  ["for f in /etc/*; do rm -rf $f; done", ctxLin, "v1.20.1: loop rm recursivo"],
+  ["while read f; do rm -rf $f; done < /etc/hosts", ctxLin, "v1.20.1: loop while rm"],
+  ["for f in /etc/*; do rm -f $f; done", ctxLin, "v1.20.1: loop rm em caminho de sistema"],
+  ["for f in /etc/passwd; do cat $f; done", ctxLin, "v1.20.1: loop sobre caminho de sistema"],
+  // interpretador com funcao de execucao
+  ["awk 'BEGIN{system(\"rm -rf /\")}'", ctxLin, "v1.20.1: awk system()"],
+  // escrita em arquivo de sistema (redirect e comandos de escrita)
+  ["echo x > /etc/passwd", ctxLin, "v1.20.1: redirect em arquivo de sistema"],
+  ["cat /tmp/x > /etc/passwd", ctxLin, "v1.20.1: redirect apos cat"],
+  ["echo x >> /etc/profile", ctxLin, "v1.20.1: append em arquivo de sistema"],
+  ["echo x | sudo -n tee /etc/passwd", ctxLin, "v1.20.1: tee em arquivo de sistema"],
+  ["sudo -n tee /etc/passwd < /tmp/x", ctxLin, "v1.20.1: tee em arquivo de sistema (redirecionado)"],
+  ["truncate -s 0 /etc/passwd", ctxLin, "v1.20.1: truncate em arquivo de sistema"],
+  ["install -m 644 /tmp/x /etc/passwd", ctxLin, "v1.20.1: install em arquivo de sistema"],
+  ["dd if=/tmp/x of=/etc/passwd", ctxLin, "v1.20.1: dd of= em arquivo de sistema"],
+  ["echo x > C:\\Windows\\System32\\drivers\\etc\\hosts", ctxWin, "v1.20.1: redirect em arquivo de sistema (Windows)"],
+  // escape do escopo via cd
+  ["cd /etc && rm -f passwd", ctxLin, "v1.20.1: cd para fora do escopo"],
+  ["cd /etc", ctxLin, "v1.20.1: cd para fora do escopo (sozinho)"],
+  ["cd ..", { home: HOME_LIN, cwd: HOME_LIN }, "v1.20.1: cd com .."],
 ];
 
 const PASSAR = [
@@ -109,9 +137,47 @@ if (typeof caminhoProtegido !== "function") {
   }
 }
 
-if (mod.VERSION !== "1.20.0") {
+// ---- v1.20.1: leitura dos arquivos internos do agente (token/config/log) ----
+// O bloqueio v1.18.0 so casava com o NOME LITERAL do arquivo: "cat ~/ponte-agent/*",
+// "grep -r token ~/ponte-agent" e "find ~/ponte-agent -exec cat {} ;" passavam.
+if (typeof mod.comandoTocaDadosDoAgente !== "function") {
   falhas++;
-  console.log("FALHOU: VERSION deveria ser 1.20.0, é %s", mod.VERSION);
+  console.log("FALHOU: comandoTocaDadosDoAgente não está exportado");
+} else {
+  const dados = mod.DATA_DIR || path.join(__dirname, "..");
+  const TOCAR = [
+    "cat ~/ponte-agent/ponte.config.json",
+    "cat ~/ponte-agent/*",
+    "cat ~/ponte-agent/ponte.config.*",
+    "grep -r token ~/ponte-agent",
+    "find ~/ponte-agent -type f -exec cat {} ;",
+    "tar -cf - -C ~ ponte-agent",
+    "cp " + path.join(dados, "ponte.config.json") + " /tmp/x",
+    "cat " + path.join(dados, "ponte-log.jsonl"),
+  ];
+  for (const cmd of TOCAR) {
+    if (!mod.comandoTocaDadosDoAgente(cmd)) {
+      falhas++;
+      console.log("FALHOU (deveria BLOQUEAR leitura interna): %s", cmd);
+    }
+  }
+  const NAO_TOCAR = [
+    "cat ~/Downloads/nota.txt",
+    "ls ~/ponte-agent",
+    "grep -r token ~/Documents",
+    "git status",
+  ];
+  for (const cmd of NAO_TOCAR) {
+    if (mod.comandoTocaDadosDoAgente(cmd)) {
+      falhas++;
+      console.log("FALHOU (deveria PASSAR): %s — bloqueio interno foi amplo demais", cmd);
+    }
+  }
+}
+
+if (mod.VERSION !== "1.20.1") {
+  falhas++;
+  console.log("FALHOU: VERSION deveria ser 1.20.1, é %s", mod.VERSION);
 }
 
 console.log(falhas === 0 ? "PASSOU — trava íntegra (%d vetores de bloqueio + %d de passagem)" : "RESULTADO: %d FALHA(S)", falhas === 0 ? BLOQUEAR.length : falhas, PASSAR.length);

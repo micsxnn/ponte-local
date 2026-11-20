@@ -188,7 +188,7 @@ export function lanesComToken(): string[] {
 
 export const ADMIN_TOKEN = tokensEnv("PONTE_ADMIN_TOKEN")[0] ?? "";
 
-export const PONTE_VERSION = "1.5.2";
+export const PONTE_VERSION = "1.5.3";
 export const CONNECTED_WINDOW_MS = 45_000;
 
 // Arquivos de estado ao lado do projeto (funciona em qualquer deploy):
@@ -201,7 +201,15 @@ const DATA_DIR = process.env.PONTE_DATA_DIR || process.cwd();
 // (nem para o agente, nem depois de um restart); o segundo ja virava 503.
 // Criar a pasta no boot evita os dois.
 try {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  // v1.20.1: a pasta de dados guarda o snapshot com os RESULTADOS (e o
+  // conteudo de arquivos em base64). Numa maquina compartilhada, 0755
+  // deixava o arquivo legivel por outros usuarios. Tenta fechar.
+  try {
+    fs.chmodSync(DATA_DIR, 0o700);
+  } catch (_) {
+    /* sem permissao (volume de outra conta): segue, mas avisa no snapshot */
+  }
 } catch (_) {
   /* sem permissao: o relay segue, mas o /cmd recusa (503) e avisa */
 }
@@ -231,7 +239,13 @@ function loadSeq(): number {
 
 function saveSeq(n: number): void {
   try {
-    fs.writeFileSync(SEQ_FILE, String(n));
+    // v1.20.1: 0600 — o contador tambem fica na pasta de dados fechada.
+    fs.writeFileSync(SEQ_FILE, String(n), { mode: 0o600 });
+    try {
+      fs.chmodSync(SEQ_FILE, 0o600);
+    } catch (_) {
+      /* volume sem suporte a chmod: segue */
+    }
   } catch (e) {
     avisaFalhaPersist("seq", e);
   }
@@ -397,8 +411,20 @@ export function saveSnapshot(s: PonteState): void {
       totalResults: s.totalResults,
     };
     const tmp = SNAPSHOT_FILE + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(snap));
+    // v1.20.1: o snapshot tem os resultados (e o conteudo de arquivos em
+    // base64) — 0600 para que so o dono do relay leia.
+    fs.writeFileSync(tmp, JSON.stringify(snap), { mode: 0o600 });
+    try {
+      fs.chmodSync(tmp, 0o600);
+    } catch (_) {
+      /* volume sem suporte a chmod: segue */
+    }
     fs.renameSync(tmp, SNAPSHOT_FILE); // atômico: nunca deixa arquivo pela metade
+    try {
+      fs.chmodSync(SNAPSHOT_FILE, 0o600);
+    } catch (_) {
+      /* idem */
+    }
     g.__pontePersistFalha = null; // v1.5.1: persistência voltou — libera addCommand
   } catch (e) {
     g.__pontePersistFalha = e instanceof Error ? e.message : String(e);

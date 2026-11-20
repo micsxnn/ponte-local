@@ -164,7 +164,13 @@ sempre é dele, o terminal é que não precisa de flag.
 cobre **ação perigosa**, não só texto perigoso: `rm`/`mv` com glob, `mv` de
 alvo de sistema, `sudo` com flags (`-n`, `-i`, `-u`), `bash -lc '...'`,
 `eval`, `python -c`/`perl -e`/`node -e`, `source ./x.sh`, alias, `!!`,
-leitura de `/etc/shadow` ou de `~/.ssh`/`~/.aws`/`~/.npmrc`, `cmd /c rd /s`,
+**comando via variável** (`r=rm; $r -rf /`), **alias de binário**
+(`busybox rm -rf /`), **loop de shell** (`for f in /etc/*; do rm -rf $f; done`),
+**`awk system()`**, **`cd` para fora da home**, **escrita em arquivo de
+sistema** (redirect, `tee`, `truncate`, `install`, `dd of=`),
+leitura de `/etc/shadow` ou de `~/.ssh`/`~/.aws`/`~/.npmrc`,
+leitura da config/log do agente (inclusive por glob, pasta ou `find -exec`),
+`cmd /c rd /s`,
 aliases do PowerShell (`rm`, `rd`, `del`, `erase`), `$env:windir`, `reg
 delete`, `net user`, `takeown`, `icacls`, `bcdedit`. Se a ação **parece**
 destrutiva e a trava não pegou, **confirme com o usuário** em vez de
@@ -527,7 +533,7 @@ execução (seria perigoso) — ele avisa no terminal:
 
 ```
   ┌──────────────────────────────────────────────┐
-  │  Nova versao do agente: v1.20.0              │
+  │  Nova versao do agente: v1.20.1              │
   └──────────────────────────────────────────────┘
     Baixada e validada. Reinicie o agente para usar.
 ```
@@ -1011,7 +1017,7 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
   `--save` regrava a config sozinho.
 - **Atualizar o agente (instalação `npx`):** é automático — o `npx` resolve
   a versão mais nova do pacote a cada execução. Se o usuário quiser fixar:
-  `npx ponte-local start@1.20.0 ...`.
+  `npx ponte-local start@1.20.1 ...`.
 - **Atualizar o agent.js na máquina (sem npm):** automático — o próprio agente
   checa a cada 30 min, baixa a versão nova, valida com `node --check` e a
   aplica no próximo boot (backup em `agent.js.bak`). Manual, se precisar:

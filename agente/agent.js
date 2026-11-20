@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Ponte Local — Agente v1.20.0 (Windows + Linux + macOS + Termux)
+ * Ponte Local — Agente v1.20.1 (Windows + Linux + macOS + Termux)
  * Roda no SEU computador e executa, sob comando do relay, uma lista FIXA de
  * operações de arquivo. run_command roda em shell de verdade (cmd.exe/bash -c)
  * — por isso a trava anticatástrofe bloqueia os vetores destrutivos conhecidos
@@ -124,7 +124,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.20.0";
+const VERSION = "1.20.1";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -1186,6 +1186,39 @@ function argumentosDoSegmento(seg, comando) {
   return tokensDoSegmento(seg, comando).filter((t) => t && !t.startsWith("-"));
 }
 
+// ---- v1.20.1: a estrutura real do comando ------------------------------
+// A trava olhava o PRIMEIRO token do segmento como "comando principal".
+// Isso erra em tres casos que a auditoria achou:
+//   "busybox rm -rf /"       → o comando real e o rm, o primeiro token e o alias
+//   "$r -rf /" (r=rm)        → o comando real esta numa variavel
+//   "do rm -rf $f" (em loop) → o comando real vem depois da palavra do loop
+// Aqui o comando principal e resolvido de verdade.
+const PALAVRAS_ESTRUTURA =
+  /^(?:for|while|until|do|then|else|elif|in|select|function|case|esac|fi|done|\{|\}|\[\[|\]\]|\(\(|(\)))\s+/;
+// wrappers que rodam OUTRO comando: "busybox rm ..." e "toybox rm ..."
+const WRAPPERS_ALIAS = new Set(["busybox", "toybox"]);
+function tiraEstrutura(seg) {
+  let s = String(seg || "").trim();
+  for (let i = 0; i < 12; i++) {
+    const m = s.match(PALAVRAS_ESTRUTURA);
+    if (!m) break;
+    s = s.slice(m[0].length).trim();
+  }
+  return s;
+}
+function principalReal(seg) {
+  const s = tiraEstrutura(seg);
+  let cmd = comandoPrincipal(s);
+  const baixo = cmd.toLowerCase();
+  if (WRAPPERS_ALIAS.has(baixo)) {
+    const toks = s.trim().split(/\s+/);
+    const i = toks.findIndex((t) => t.replace(/["']/g, "") === baixo);
+    const prox = toks.slice(i + 1).find((t) => t && !t.startsWith("-"));
+    if (prox) cmd = prox.replace(/["']/g, "").toLowerCase();
+  }
+  return cmd;
+}
+
 // um alvo com glob (* ou ?) nao pode ser checado literalmente: o shell
 // expande. "rm -rf /home/u/*" apaga a home INTEIRA mesmo sem o glob.
 function temGlob(alvo) {
@@ -1204,6 +1237,120 @@ function dangerCheck(cmdline, ctx) {
   // fork bomb em forma de função: "bomb(){ bomb|bomb & }; bomb"
   if (/\b\w+\s*\(\s*\)\s*\{[^}]*\|\s*\w+\s*&[^}]*\}\s*;?/.test(cmdline))
     return "fork bomb (função recursiva)";
+  // ---- v1.20.1: a auditoria achou furos ESTRUTURAIS --------------------
+  // A trava via o primeiro token do segmento como "comando principal".
+  // Isso deixava passar, no modo autônomo:
+  //   busybox rm -rf /              (alias esconde o rm)
+  //   r=rm; $r -rf /                (comando numa variável)
+  //   for f in /etc/*; do rm -rf $f (comando dentro de loop)
+  //   awk 'BEGIN{system("rm -rf /")}' (interpretador com system())
+  //   echo x > /etc/passwd          (escrita em arquivo de sistema)
+  //   cd /etc && rm -f passwd       (cd escapa do escopo da home)
+  const segsV = cmdline.split(/\n|;|&&|\|\||\||&/);
+  // (a) comando vindo de variável/indireção
+  for (const seg of segsV) {
+    const s = tiraEstrutura(seg);
+    if (!s) continue;
+    const primeiro = (s.split(/\s+/)[0] || "").replace(/["']/g, "");
+    if (/^\$\{?[A-Za-z_]/.test(primeiro))
+      return "comando via variável/indireção (" + primeiro + ") — o comando real fica escondido";
+  }
+  // (b) awk com system(): o comando real roda dentro do interpretador
+  if (/\bawk\b[^|;&]*\bsystem\s*\(/i.test(cmdline))
+    return "awk com system() — o comando real fica escondido";
+  // (c) loops de shell: percorrem caminhos de sistema ou executam destrutivo
+  const COMANDOS_DESTRUTIVOS = new Set([
+    "rm", "rmdir", "del", "erase", "shred", "srm", "mv", "ren", "rename",
+    "dd", "mkfs", "mkfs.ext4", "wipefs", "fdisk", "sfdisk", "parted",
+    "chmod", "chown", "truncate", "tee", "install", "ln",
+  ]);
+  for (const seg of segsV) {
+    const cru = seg.trim();
+    if (!cru) continue;
+    const semEstrutura = tiraEstrutura(cru);
+    if (semEstrutura === cru) continue; // nao era loop/estrutura
+    // (c1) o loop percorre um caminho de sistema
+    if (/^(?:for|while|until)\b/i.test(cru) &&
+      /(?:^|\s)(?:\/etc|\/usr|\/bin|\/sbin|\/boot|\/lib|\/opt|\/root|\/proc|\/sys|\/dev|\/var)(?:\/|\s|\*|$)/i.test(cru))
+      return "loop de shell sobre caminho de sistema (" + cru + ")";
+    // (c2) o corpo do loop executa comando destrutivo
+    const principal = principalReal(cru).toLowerCase();
+    if (COMANDOS_DESTRUTIVOS.has(principal))
+      return "loop de shell executando comando destrutivo (" + principal + ") — use as ações de arquivo, que vão para a lixeira";
+  }
+  // (d) escrita em area de sistema: redirect, tee, truncate, install, dd of=, ln
+  const ehAlvoSistemaEscrita = (alvo) => {
+    let a = String(alvo || "").trim().replace(/^["']|["']$/g, "");
+    if (!a) return false;
+    // dispositivos pseudo-permitidos (nao sao arquivos de sistema)
+    if (/^\/dev\/(null|zero|random|urandom|stdin|stdout|stderr|tty|fd\/)/i.test(a)) return false;
+    // Windows: raiz do drive e pastas do sistema
+    if (/^[a-z]:[\\/]/i.test(a)) {
+      const w = a.replace(/\\/g, "/");
+      if (/^[a-z]:\/$/i.test(w)) return true;
+      if (/^[a-z]:\/(?:windows|program files|program files \(x86\)|programdata|users)\b/i.test(w)) return true;
+      return false;
+    }
+    // Unix: areas do sistema (fora a home do usuario e /tmp)
+    if (/^\/(?:etc|usr|bin|sbin|boot|lib|lib64|opt|root|proc|sys|srv|dev)(?:\/|$)/i.test(a)) return true;
+    if (/^\/(?:var|run)(?:\/|$)/i.test(a)) {
+      if (/^\/(?:var\/tmp|run\/user)\b/i.test(a)) return false;
+      return true;
+    }
+    // home de OUTRO usuario
+    if (/^\/home\/[^/]+(?:\/|$)/i.test(a)) {
+      if (!homeRes) return true;
+      const resolvido = path.resolve(a);
+      if (resolvido !== homeRes && !resolvido.startsWith(homeRes + path.sep)) return true;
+    }
+    return false;
+  };
+  // (d1) redirecionamento de escrita: "> /etc/passwd", ">> arquivo"
+  const reRedir = /(?:^|[^0-9<>])>>?\s*("[^"]+"|'[^']+'|\S+)/g;
+  let mRedir;
+  while ((mRedir = reRedir.exec(cmdline)) !== null) {
+    const alvo = String(mRedir[1] || "").replace(/^["']|["']$/g, "");
+    if (ehAlvoSistemaEscrita(alvo))
+      return "escrita em arquivo de sistema (" + alvo + ")";
+  }
+  // (d2) comandos que escrevem em arquivo: tee/truncate/install/dd of=/ln
+  for (const seg of segsV) {
+    const cmd = principalReal(seg).toLowerCase();
+    if (!["tee", "truncate", "install", "dd", "ln"].includes(cmd)) continue;
+    const toks = seg.trim().split(/\s+/);
+    const candidatos = [];
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i];
+      if (/^of\s*=/i.test(t)) candidatos.push(t.replace(/^of\s*=\s*/i, ""));
+      else if (cmd === "dd" && /^of=/i.test(t)) candidatos.push(t.slice(3));
+      else if (cmd === "tee" && !t.startsWith("-")) candidatos.push(t);
+      else if (cmd === "truncate" && !t.startsWith("-") && !/^\d/.test(t)) candidatos.push(t);
+      else if (cmd === "install" && !t.startsWith("-") && i > 0) candidatos.push(t);
+      else if (cmd === "ln" && !t.startsWith("-")) candidatos.push(t);
+    }
+    for (const alvo of candidatos) {
+      if (ehAlvoSistemaEscrita(alvo))
+        return "escrita em arquivo de sistema (" + alvo + ")";
+    }
+  }
+  // (e) cd para fora do escopo: o cwd do run_command é validado, mas um cd
+  // dentro do comando escapava dele ("cd /etc && rm -f passwd")
+  for (const seg of segsV) {
+    const cmd = principalReal(seg).toLowerCase();
+    if (!["cd", "pushd", "chdir"].includes(cmd)) continue;
+    const alvo = (argumentosDoSegmento(seg, cmd)[0] || "").replace(/["']/g, "");
+    if (!alvo) continue; // cd sem argumento volta para a home
+    if (alvo === "~" || alvo === "$HOME" || alvo === "%USERPROFILE%") continue;
+    if (/\$/.test(alvo))
+      return "cd com variável não resolvida (" + alvo + ")";
+    if (!homeRes) continue;
+    const exp = /^~/.test(alvo) ? path.join(homeRes, alvo.slice(1)) : alvo;
+    const resolvido = path.isAbsolute(exp)
+      ? path.resolve(exp)
+      : path.resolve(cwdRes || homeRes, exp);
+    if (resolvido !== homeRes && !resolvido.startsWith(homeRes + path.sep))
+      return "cd para fora do escopo (" + alvo + " → " + resolvido + ")";
+  }
   // ---- v1.18.0: os bypasses que a auditoria achou -------------------
   // A regra real e "acao perigosa", nao "string perigosa". Estas formas
   // executam um comando destrutivo ESCONDIDO dentro de outra coisa.
@@ -1245,6 +1392,12 @@ function dangerCheck(cmdline, ctx) {
     return "leitura de credencial do usuario (pasta sensivel)";
   if (/\bprintenv\b|\/proc\/self\/environ/i.test(cmdline))
     return "leitura de variaveis de ambiente (podem conter segredos)";
+  // v1.20.1: "env" sozinho tambem DUMPA o ambiente — "env FOO=bar cmd" nao,
+  // porque ai o env e um wrapper (comandoPrincipal ja pula o env).
+  for (const seg of segsV) {
+    if (/^\s*env\s*$/i.test(seg))
+      return "leitura de variaveis de ambiente (podem conter segredos)";
+  }
   // derrubar a maquina / o servico / o usuario
   if (cmds.some((c) => ["shutdown", "reboot", "halt", "poweroff", "init"].includes(c.toLowerCase())))
     return "desligar/reiniciar a maquina";
@@ -1429,7 +1582,9 @@ function dangerCheck(cmdline, ctx) {
   };
   const segmentos = cmdline.split(/\n|;|&&|\|\||\||&/);
   for (const seg of segmentos) {
-    const cmd = comandoPrincipal(seg);
+    // v1.20.1: principalReal — "busybox rm -rf /" e "do rm -rf $f" (loop)
+    // devem ser lidos pelo comando REAL, nao pelo primeiro token.
+    const cmd = principalReal(seg);
     // rm: usa o comando real (sudo -n rm, cmd /c rm, etc.)
     if (cmd.toLowerCase() === "rm") {
       const toks = seg.trim().split(/\s+/);
@@ -1536,7 +1691,8 @@ function dangerCheck(cmdline, ctx) {
     const s = seg.trim();
     // v1.18.0: usa o comando REAL do segmento — "cmd /c rd /s /q C:\"
     // nao casava porque o regex exigia rd no COMECO do segmento.
-    const cmdReal = comandoPrincipal(s).toLowerCase();
+    // v1.20.1: principalReal (alias/loop) em vez do primeiro token.
+    const cmdReal = principalReal(s).toLowerCase();
     // /s em QUALQUER posição (v1.12.0): "rd C:\ /s /q" passava — cmd.exe
     // aceita a flag DEPOIS do alvo
     if (cmdReal === "rd" || cmdReal === "rmdir") {
@@ -1869,6 +2025,36 @@ const GROUPS = [
 ];
 const EXT_TO_GROUP = {};
 for (const [label, exts] of GROUPS) for (const e of exts) EXT_TO_GROUP[e] = label;
+
+// ---- v1.20.1: leitura dos arquivos internos do agente -------------------
+// O token da ponte mora na config; o log tem o historico de tudo que a IA
+// fez. As acoes de arquivo ja recusam (caminhoProtegido) — mas o run_command
+// roda no shell e burlava: o bloqueio v1.18.0 so casava com o NOME LITERAL do
+// arquivo, entao "cat ~/ponte-agent/*", "grep -r token ~/ponte-agent" e
+// "find ~/ponte-agent -exec cat {} ;" passavam.
+const LEITORES_INTERNOS =
+  /\b(?:cat|head|tail|less|more|sed|grep|egrep|rgrep|rg|awk|strings|nl|cut|tac|xxd|od|base64|cp|install|rsync|scp|tar|zip|7z|unzip|dd|find|du|stat|file|readlink|ln)\b/i;
+function comandoTocaDadosDoAgente(cmdline) {
+  const s = String(cmdline || "");
+  if (!s || !LEITORES_INTERNOS.test(s)) return false;
+  // (1) nome literal dos arquivos internos do agente
+  if (/\b(?:ponte\.config\.json|ponte-log\.jsonl(?:\.old)?|skill-manifest\.json|relatorio-ponte\.txt)\b/i.test(s))
+    return true;
+  // (2) a pasta de dados do agente, pelo nome ("ponte-agent") ou pelo caminho
+  const nomes = new Set(["ponte-agent"]);
+  try {
+    const base = path.basename(DATA_DIR_RESOLVIDO);
+    if (base) nomes.add(base);
+  } catch (_) {}
+  for (const nome of nomes) {
+    const re = new RegExp("\\b" + String(nome).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "i");
+    if (re.test(s)) return true;
+  }
+  // (3) caminho absoluto da pasta de dados (PONTE_HOME customizado)
+  if (DATA_DIR_RESOLVIDO && s.includes(DATA_DIR_RESOLVIDO)) return true;
+  if (DATA_DIR_REAL && s.includes(DATA_DIR_REAL)) return true;
+  return false;
+}
 
 // ------------------------------------------- modo deus + skill (v1.5.0)
 function versaoDe(texto) {
@@ -4678,8 +4864,11 @@ const ACTIONS = {
     // A config (com o token da ponte) e o log (com o historico) sao
     // protegidos para as acoes de arquivo, mas o run_command roda no shell
     // e burlava essa protecao: "cat ~/ponte-agent/ponte.config.json"
-    // devolvia o token. Agora o proprio comando e recusado.
-    if (/\b(?:cat|head|tail|less|more|sed|grep|awk|strings|nl|cut|tac|xxd|od|base64|cp|install|rsync|tar|dd)\b[^|;&]*\b(?:ponte\.config\.json|ponte-log\.jsonl|skill-manifest\.json)\b/i.test(cmdline))
+    // devolvia o token.
+    // v1.20.1: o bloqueio deixou de casar so com o nome literal — glob
+    // ("cat ~/ponte-agent/*"), pasta ("grep -r token ~/ponte-agent") e
+    // "find ~/ponte-agent -exec cat {} ;" tambem sao recusados agora.
+    if (comandoTocaDadosDoAgente(cmdline))
       throw new Error(
         "BLOQUEADO: o run_command nao pode ler os arquivos internos do agente " +
           "(config com o token, log de auditoria, manifesto da skill). " +
@@ -5362,6 +5551,14 @@ async function main() {
   console.log("──────────────────────────────────────────────");
   console.log("  Ponte Local — agente v" + VERSION);
   console.log("  Servidor : " + cfg.server);
+  // v1.20.1: relay sem TLS — o token da ponte trafega em claro no header.
+  // Em localhost (relay de teste) tudo bem; na internet, nao.
+  if (/^http:\/\//i.test(cfg.server) && !/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::|\/|$)/i.test(cfg.server)) {
+    console.log("");
+    console.log("  ⚠ AVISO: o relay está em http:// (sem TLS).");
+    console.log("    O token da ponte trafega em claro pela rede. Use https://");
+    console.log("    (ou aponte para um relay local em http://127.0.0.1).");
+  }
   console.log(
     "  Modo     : " +
       (!cfg.run
@@ -5471,6 +5668,7 @@ module.exports = {
   CONFIG_FILE,
   dangerCheck,
   caminhoProtegido,
+  comandoTocaDadosDoAgente,
   ALVO_SISTEMA,
   ALVO_SISTEMA_WIN,
   VERSION,

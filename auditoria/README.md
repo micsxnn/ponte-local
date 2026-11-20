@@ -8,6 +8,7 @@ Nada é executado no sistema: as sondas só chamam a análise e imprimem
 ```bash
 node auditoria/probe-trava.js        # vetores classicos + leitura de arquivos internos
 node auditoria/probe-indirecao.js    # indirecao de comando, loops, escrita em arquivo de sistema
+node auditoria/probe-legit.js        # comandos legitimos que a trava NAO pode bloquear
 ```
 
 - [probe-trava.js](probe-trava.js) — vetores já cobertos pela trava, formas de
@@ -16,8 +17,15 @@ node auditoria/probe-indirecao.js    # indirecao de comando, loops, escrita em a
   (`busybox rm`, `r=rm; $r`), loops de shell (`for`/`while`), `awk system()`,
   escrita em arquivo de sistema (`> /etc/passwd`, `tee`, `truncate`, `install`)
   e escape do escopo via `cd`.
+- [probe-legit.js](probe-legit.js) — **regressão**: 33 comandos do dia a dia
+  (`npm install`, `git commit`, `make`, `tee ~/saida.txt`, `for f in *.txt…`)
+  que precisam continuar passando. Linha `BLOQUEADO` aqui = falso positivo.
 
-Cada linha `PERMITIDO` é um furo: em modo autônomo/modo deus o comando roda
-**sem confirmação humana**. Ao corrigir a trava, acrescente o vetor ao
+Cada linha `PERMITIDO` na auditoria de vetores é um furo: em modo
+autônomo/modo deus o comando roda **sem confirmação humana**. Ao corrigir a
+trava, acrescente o vetor ao
 [agente/teste-trava.cjs](../agente/teste-trava.cjs) antes de mexer no
 `dangerCheck`.
+
+Estado atual (v1.20.1): os vetores da auditoria estão todos `BLOQUEADO` e os
+33 comandos legítimos do `probe-legit.js` passam.

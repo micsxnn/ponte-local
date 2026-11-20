@@ -6,9 +6,13 @@ const mod = require("../agente/agent.js");
 
 const CTX = { home: "/home/usuario", cwd: "/home/usuario" };
 
-// mesma regex usada em run_command (v1.18.0) para proteger config/log
-const RE_INTERNO =
-  /\b(?:cat|head|tail|less|more|sed|grep|awk|strings|nl|cut|tac|xxd|od|base64|cp|install|rsync|tar|dd)\b[^|;&]*\b(?:ponte\.config\.json|ponte-log\.jsonl|skill-manifest\.json)\b/i;
+// mesmo bloqueio usado em run_command (v1.20.1): protege config/log do agente
+const RE_INTERNO = mod.comandoTocaDadosDoAgente
+  ? (c) => mod.comandoTocaDadosDoAgente(c)
+  : (c) =>
+      /\b(?:cat|head|tail|less|more|sed|grep|awk|strings|nl|cut|tac|xxd|od|base64|cp|install|rsync|tar|dd)\b[^|;&]*\b(?:ponte\.config\.json|ponte-log\.jsonl|skill-manifest\.json)\b/i.test(
+        c
+      );
 
 const COMANDOS = [
   // --- leitura de arquivos internos do agente (token/config) ---
@@ -57,7 +61,7 @@ for (const c of COMANDOS) {
 
 console.log("\n=== bloqueio de leitura dos arquivos internos (run_command) ===");
 for (const c of COMANDOS) {
-  const bloqueado = RE_INTERNO.test(c);
+  const bloqueado = !!RE_INTERNO(c);
   const perigo = mod.dangerCheck(c, CTX);
   console.log(
     (bloqueado || perigo ? "BLOQUEADO " : "PERMITIDO ") +
