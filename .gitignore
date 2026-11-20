@@ -15,3 +15,6 @@ COMMIT_MSG.tmp
 # saídas de teste temporárias (não vão para o repo)
 dr.log
 dr.txt
+dr-trace.log
+dr-*.log
+dr-*.txt
