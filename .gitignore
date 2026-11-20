@@ -12,3 +12,6 @@ node_modules/
 .DS_Store
 RELEASE_NOTES.md
 COMMIT_MSG.tmp
+# saídas de teste temporárias (não vão para o repo)
+dr.log
+dr.txt
