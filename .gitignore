@@ -11,3 +11,4 @@ node_modules/
 *.tgz
 .DS_Store
 RELEASE_NOTES.md
+COMMIT_MSG.tmp
