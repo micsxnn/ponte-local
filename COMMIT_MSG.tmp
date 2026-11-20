@@ -1,0 +1,13 @@
+test(relay): checa lanes, autenticacao e permissoes do estado do relay
+
+O relay nao tem suíte de teste: os arquivos .ts sao copiados para um projeto
+Next.js e só rodam la. Este teste importa o ponte-store.ts direto (type
+stripping nativo do Node, sem dependencias) numa pasta temporaria e confere:
+
+- lane nascida do env (PONTE_TOKEN_MAQUINA_1 -> maquina_1)
+- autenticacao de admin e de agente (token certo passa, errado nao)
+- isolamento entre lanes: comando e resultado nao vazam
+- permissoes do estado gravado em disco (v1.20.1):
+  .ponte-estado.json 0600, .ponte-seq 0600, pasta de dados 0700
+
+package.json ganha "test:relay" e "test:legit", alem do "test" ja existente.

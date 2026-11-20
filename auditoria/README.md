@@ -9,7 +9,10 @@ Nada é executado no sistema: as sondas só chamam a análise e imprimem
 node auditoria/probe-trava.js        # vetores classicos + leitura de arquivos internos
 node auditoria/probe-indirecao.js    # indirecao de comando, loops, escrita em arquivo de sistema
 node auditoria/probe-legit.js        # comandos legitimos que a trava NAO pode bloquear
+node --experimental-strip-types auditoria/teste-relay.mjs   # relay: lanes, auth e permissoes
 ```
+
+Ou, pelo pacote: `npm test` (trava), `npm run test:legit`, `npm run test:relay`.
 
 - [probe-trava.js](probe-trava.js) — vetores já cobertos pela trava, formas de
   ler a config/log do agente (token) e os casos que passam.
@@ -20,6 +23,11 @@ node auditoria/probe-legit.js        # comandos legitimos que a trava NAO pode b
 - [probe-legit.js](probe-legit.js) — **regressão**: 33 comandos do dia a dia
   (`npm install`, `git commit`, `make`, `tee ~/saida.txt`, `for f in *.txt…`)
   que precisam continuar passando. Linha `BLOQUEADO` aqui = falso positivo.
+- [teste-relay.mjs](teste-relay.mjs) — importa o `ponte-store.ts` (type
+  stripping nativo do Node, sem dependências) numa pasta temporária e confere:
+  lane nascida do env, autenticação de admin/agente, isolamento entre lanes
+  (comando e resultado), e as **permissões** do snapshot (`0600`), da pasta de
+  dados (`0700`) e do contador (`0600`).
 
 Cada linha `PERMITIDO` na auditoria de vetores é um furo: em modo
 autônomo/modo deus o comando roda **sem confirmação humana**. Ao corrigir a

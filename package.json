@@ -43,6 +43,8 @@
   "scripts": {
     "test": "node agente/teste-trava.cjs",
     "test:trava": "node agente/teste-trava.cjs",
+    "test:legit": "node auditoria/probe-legit.js",
+    "test:relay": "node --experimental-strip-types auditoria/teste-relay.mjs",
     "release": "./publicar.sh",
     "release:patch": "./publicar.sh patch",
     "release:minor": "./publicar.sh minor",
