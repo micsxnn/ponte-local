@@ -5,17 +5,26 @@
     {
       "origem": "SKILL.md",
       "destino": "SKILL.md",
+      "sha256": "a951aef6af95275b5ba1be0da1c8ff47bc6b050dd290123fc6715c9707651ff8",
       "descricao": "Especificacao principal da skill (a que a IA na VM leia)"
     },
     {
       "origem": "agente/SKILL.md",
       "destino": "SKILL-MAQUINA.md",
+      "sha256": "351c89b95c3df65cd2434cb56ef0d7b3a11f8445e1dccee67b0a55550a20ef93",
       "descricao": "Variante da skill para a IA que esta dentro da maquina do usuario"
     },
     {
       "origem": "agente/LEIA-ME.md",
       "destino": "LEIA-ME.md",
+      "sha256": "97fcd72b9d9c91847e8606f93e33d15e41b7d8b09682c2d5914e88295274aaee",
       "descricao": "Manual do agente para o usuario final"
+    },
+    {
+      "origem": "agente/agent.js",
+      "destino": "agent.js",
+      "sha256": "b8958177aa44ef5a54bb75f6dad35a9bee69687f73d60288433e8ca6a5194e42",
+      "descricao": "O proprio agent.js (auto-update com integridade)"
     }
   ]
 }

@@ -533,7 +533,7 @@ execução (seria perigoso) — ele avisa no terminal:
 
 ```
   ┌──────────────────────────────────────────────┐
-  │  Nova versao do agente: v1.20.1              │
+  │  Nova versao do agente: v1.20.2              │
   └──────────────────────────────────────────────┘
     Baixada e validada. Reinicie o agente para usar.
 ```
@@ -1017,7 +1017,7 @@ agente → o `ping` traz a versão dele; skill → marcador `<!-- skill-version 
   `--save` regrava a config sozinho.
 - **Atualizar o agente (instalação `npx`):** é automático — o `npx` resolve
   a versão mais nova do pacote a cada execução. Se o usuário quiser fixar:
-  `npx ponte-local start@1.20.1 ...`.
+  `npx ponte-local start@1.20.2 ...`.
 - **Atualizar o agent.js na máquina (sem npm):** automático — o próprio agente
   checa a cada 30 min, baixa a versão nova, valida com `node --check` e a
   aplica no próximo boot (backup em `agent.js.bak`). Manual, se precisar:

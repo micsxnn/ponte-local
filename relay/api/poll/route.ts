@@ -1,12 +1,5 @@
 import { NextRequest } from "next/server";
-import {
-  isAgentAuthorized,
-  laneForAgent,
-  markSeen,
-  pollCommands,
-  pollFresh,
-  PONTE_VERSION,
-} from "@/lib/ponte-store";
+import { isAgentAuthorized, laneForAgent, markSeen, pollCommands, pollFresh, PONTE_VERSION } from "@/lib/ponte-store";
 
 export const dynamic = "force-dynamic";
 

@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
     }
     lane = laneParam;
   }
+  const { resultsSince } = await import("@/lib/ponte-store");
   const results = resultsSince(since, lane);
   const lastId = results.length ? results[results.length - 1].id : since;
   return new Response(JSON.stringify({ ok: true, results, lastId, lane: lane ?? "todas" }), {

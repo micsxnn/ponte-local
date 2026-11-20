@@ -1,6 +1,6 @@
 {
   "name": "ponte-local",
-  "version": "1.20.1",
+  "version": "1.20.2",
   "description": "Sua IA opera seu PC pelo chat: agente local, zero dependências, relay Next.js que você hospeda.",
   "keywords": [
     "ai",

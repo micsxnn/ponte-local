@@ -124,7 +124,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.20.1";
+const VERSION = "1.20.2";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -166,19 +166,42 @@ const SKILL_FILE = path.join(DATA_DIR, "SKILL.md");
 const SKILL_MANIFEST_LOCAL = path.join(DATA_DIR, "skill-manifest.json");
 const SKILL_DIR = path.join(DATA_DIR, "skill");
 
-// ---- auto-update do AGENTE (v1.19.0) --------------------------------
-// A skill se atualiza sozinha; o agent.js NAO se atualizava. Agora sim, e
-// do mesmo jeito em TODAS as plataformas: e Node puro (sem shell, sem
-// bash, sem curl), entao funciona igual no Linux (qualquer distro),
-// Windows, macOS e Termux.
-//
-// Fluxo:
-//   1. de tempos em tempos o agente checa se ha versao nova no repo
-//   2. baixa, valida com "node --check" e PREPARA como agent.js.novo
-//   3. no proximo boot o agente novo entra (com backup do anterior)
-// O agente NAO se troca enquanto roda (trocar o arquivo em execucao
-// seria perigoso): ele deixa o novo pronto e avisa para reiniciar.
-const AGENT_URL = SKILL_REPO_BASE + "agente/agent.js";
+// ---- v1.20.2: verifica integridade do manifesto da skill (hashes + assinatura opcional) ----
+// A chave publica (Ed25519, PKCS#8 SPKI base64) fica FIXA no codigo. O mantenedor
+// gera o manifesto com "node scripts/gerar-manifesto.js --sign <chave_privada>"
+// e publica no repo. O agente so valida — NUNCA gera assinatura.
+const CHAVE_PUBLICA_MANIFESTO = null; // definida no build/gerar-manifesto; null = so hashes
+function verificarManifesto(manifesto) {
+  // hashes
+  for (const item of manifesto.arquivos || []) {
+    if (item.sha256) {
+      const hash = crypto.createHash("sha256").update(item.conteudo || "").digest("hex");
+      if (hash !== item.sha256) {
+        return { erro: "hash invalido para " + item.origem + " (esperado " + item.sha256 + ", calculado " + hash + ")" };
+      }
+    }
+  }
+  // assinatura (opcional)
+  if (manifesto.assinatura && CHAVE_PUBLICA_MANIFESTO) {
+    const { algoritmo, chave_publica, assinatura_base64 } = manifesto.assinatura;
+    if (algoritmo !== "Ed25519") return { erro: "algoritmo de assinatura nao suportado: " + algoritmo };
+    if (chave_publica !== CHAVE_PUBLICA_MANIFESTO) return { erro: "chave publica do manifesto nao confere" };
+    const copia = Object.assign({}, manifesto);
+    delete copia.assinatura;
+    const dados = JSON.stringify(copia, null, 2);
+    const verificador = crypto.createVerify("sha256");
+    verificador.update(dados);
+    verificador.end();
+    const pub = crypto.createPublicKey({ key: Buffer.from(chave_publica, "base64"), format: "der", type: "spki" });
+    if (!verificador.verify(pub, Buffer.from(assinatura_base64, "base64"))) {
+      return { erro: "assinatura do manifesto invalida" };
+    }
+  }
+  return { erro: null };
+}
+
+// chave publica do manifesto (Ed25519, base64). Vem do scripts/gerar-manifesto.js
+// quando roda com --sign. Se null, o agente valida so os hashes.
 // o nome precisa terminar em .js: o node --check (usado para validar o
 // download) aborta com ERR_UNKNOWN_FILE_EXTENSION em qualquer outra extensao
 const AGENT_NOVO = path.join(DATA_DIR, "agent.novo.js");
@@ -1210,6 +1233,14 @@ function principalReal(seg) {
   const s = tiraEstrutura(seg);
   let cmd = comandoPrincipal(s);
   const baixo = cmd.toLowerCase();
+  // v1.20.2: caminho absoluto esconde o comando — "/bin/rm -rf ~" e
+  // "C:\\Windows\\System32\\del.exe" sao rm/del como qualquer um.
+  if (/^\//.test(cmd) || /^[a-z]:[\\/]/i.test(cmd)) {
+    const partes = cmd.split(/[\\/]/);
+    let base = partes[partes.length - 1] || cmd;
+    base = base.replace(/\.exe$/i, "");
+    cmd = base;
+  }
   if (WRAPPERS_ALIAS.has(baixo)) {
     const toks = s.trim().split(/\s+/);
     const i = toks.findIndex((t) => t.replace(/["']/g, "") === baixo);
@@ -1288,7 +1319,14 @@ function dangerCheck(cmdline, ctx) {
     if (/^[a-z]:[\\/]/i.test(a)) {
       const w = a.replace(/\\/g, "/");
       if (/^[a-z]:\/$/i.test(w)) return true;
-      if (/^[a-z]:\/(?:windows|program files|program files \(x86\)|programdata|users)\b/i.test(w)) return true;
+      if (/^[a-z]:\/(?:windows|program files|program files \(x86\)|programdata)\b/i.test(w)) return true;
+      // C:\Users: so e sistema quando e o PERFIL de OUTRO usuario — a home do
+      // proprio usuario e area livre (v1.20.2)
+      if (/^[a-z]:\/users\//i.test(w)) {
+        const homeW = homeRaw ? homeRaw.replace(/\\/g, "/").replace(/\/+$/, "") : "";
+        if (homeW && w.toLowerCase().startsWith(homeW.toLowerCase() + "/")) return false;
+        if (!homeW) return true;
+      }
       return false;
     }
     // Unix: areas do sistema (fora a home do usuario e /tmp)
@@ -1351,6 +1389,71 @@ function dangerCheck(cmdline, ctx) {
     if (resolvido !== homeRes && !resolvido.startsWith(homeRes + path.sep))
       return "cd para fora do escopo (" + alvo + " → " + resolvido + ")";
   }
+  // (f) v1.20.2: exclusão pelo shell — o rm vai para a lixeira, ou é recusado
+  // O que NÃO pode ir para a lixeira é recusado aqui:
+  //   - alvo de sistema (/etc, /usr, /var, raiz do Windows...)
+  //   - a home inteira
+  //   - caminho com variável não resolvida (não dá para conferir o escopo)
+  //   - rm via alias/elevador ("/bin/rm", "sudo rm", "command rm", "busybox rm")
+  //     — esses escapariam da lixeira do agente
+  const ehWin = /^[a-z]:[\\/]/i.test(homeRaw || "") || process.platform === "win32";
+  const comandoDeExclusao = ehWin
+    ? ["del", "erase", "rm", "rmdir", "rd", "remove-item"]
+    : ["rm", "rmdir"];
+  for (const seg of segsV) {
+    const cru = seg.trim();
+    if (!cru) continue;
+    const cmd = principalReal(cru).toLowerCase();
+    if (!comandoDeExclusao.includes(cmd)) continue;
+    // invocação "crua" (a única que o agente consegue levar à lixeira)
+    const crua = new RegExp("^\\s*" + cmd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s", "i").test(cru);
+    // /s (Windows) apaga em cascata — a lixeira nao garante a mesma semantica
+    if (ehWin && /(^|\s)\/s\b/i.test(cru))
+      return "exclusão recursiva via shell no Windows não passa pela lixeira — use a ação delete";
+    if (!crua)
+      return "rm via alias/elevador não passa pela lixeira — use a ação delete (" + cru + ")";
+    // alvos (operandos): o resto, sem flags
+    const toks = cru.trim().split(/\s+/);
+    const inicio = toks.findIndex((t) => t.replace(/["']/g, "").toLowerCase() === cmd);
+    const alvos = toks.slice(inicio + 1).filter((t) => t && !t.startsWith("-"));
+    for (const alvo of alvos) {
+      const limpo = alvo.replace(/["']/g, "");
+      if (!limpo || limpo.startsWith("-")) continue;
+      if (/\$/.test(limpo))
+        return "rm com variável não resolvida (" + limpo + ") — use caminho literal ou a ação delete";
+      if (ehWin) {
+        // Windows: alvo de sistema = raiz do drive ou pasta do Windows
+        const w = limpo.replace(/\\/g, "/");
+        if (/^[a-z]:\/$/i.test(w))
+          return "exclusão em arquivo de sistema (" + limpo + ") — use a ação delete";
+        if (/^[a-z]:\/(?:windows|program files|program files \(x86\)|programdata)\b/i.test(w))
+          return "exclusão em arquivo de sistema (" + limpo + ") — use a ação delete";
+        // C:\Users: so e sistema o perfil de OUTRO usuario (v1.20.2)
+        if (/^[a-z]:\/users\//i.test(w)) {
+          const homeW = homeRaw ? homeRaw.replace(/\\/g, "/").replace(/\/+$/, "") : "";
+          if (!homeW || !w.toLowerCase().startsWith(homeW.toLowerCase() + "/"))
+            return "exclusão no perfil de outro usuário (" + limpo + ") — use a ação delete";
+        }
+        continue;
+      }
+      if (ehAlvoSistemaEscrita(limpo))
+        return "exclusão em área de sistema (" + limpo + ") — use a ação delete";
+      if (!homeRes) continue;
+      const exp = /^~/.test(limpo) ? path.join(homeRes, limpo.slice(1)) : limpo;
+      const resolvido = path.isAbsolute(exp)
+        ? path.resolve(exp)
+        : path.resolve(cwdRes || homeRes, exp);
+      if (resolvido === homeRes)
+        return "exclusão da home inteira — bloqueado";
+      // fora da home so o /tmp (rascunho) e a propria lixeira: o resto é
+      // recusado — o rm do shell é a lixeira, nao o sumidouro
+      if (!resolvido.startsWith(homeRes + path.sep)) {
+        const temporario = /^\/tmp(?:\/|$)/.test(resolvido) || /^\/var\/tmp(?:\/|$)/.test(resolvido);
+        if (!temporario)
+          return "exclusão fora da home (" + limpo + ") — o rm do shell só alcança a sua home";
+      }
+    }
+  }
   // ---- v1.18.0: os bypasses que a auditoria achou -------------------
   // A regra real e "acao perigosa", nao "string perigosa". Estas formas
   // executam um comando destrutivo ESCONDIDO dentro de outra coisa.
@@ -1363,7 +1466,8 @@ function dangerCheck(cmdline, ctx) {
   if (cmds.some((c) => c === "eval")) return "eval (executa texto como comando)";
   // interpretador com codigo inline: python -c, perl -e, ruby -e, node -e
   for (const seg of segs) {
-    const c = comandoPrincipal(seg).toLowerCase();
+    // v1.20.2: principalReal — "/usr/bin/python3 -c ..." tambem e interpretador
+    const c = principalReal(seg).toLowerCase();
     if (/^(python[0-9.]*|perl|ruby|php|node|nodejs|lua|tclsh|awk)$/.test(c)) {
       const resto = tokensDoSegmento(seg, c);
       if (resto.some((a) => /^-[a-z]*[ecr]$/i.test(a)))
@@ -1781,9 +1885,52 @@ function dicaExecutionPolicy() {
   );
 }
 
+// v1.20.2: o rm/rmdir do shell passa pela lixeira do agente.
+// No POSIX, o shell recebe uma funcao que substitui rm/rmdir pela lixeira
+// (o comando do usuario continua o mesmo — o que muda e o destino). No
+// Windows (cmd.exe nao tem funcao), os segmentos simples de del/rmdir/rd
+// sao reescritos para o mesmo ajudante.
+function comandoUsaExclusao(cmdline) {
+  return String(cmdline || "")
+    .split(/\n|;|&&|\|\||\||&/)
+    .some((seg) => {
+      const s = seg.trim();
+      if (!s) return false;
+      const p = principalReal(s).toLowerCase();
+      return p === "rm" || p === "rmdir" || p === "del" || p === "erase" || p === "rd";
+    });
+}
+function comandoComLixeira(cmdline, cwd) {
+  if (!comandoUsaExclusao(cmdline)) return cmdline;
+  const ajuda = caminhoAjudaLixeira();
+  if (!ajuda) return cmdline; // sem ajudante: o comando roda como estava
+  const q = JSON.stringify(ajuda);
+  if (process.platform !== "win32") {
+    // POSIX: funcao de shell que manda o rm para a lixeira
+    return (
+      "rm(){ node " + q + " rm \"$@\"; }; " +
+      "rmdir(){ node " + q + " rmdir \"$@\"; }; " +
+      cmdline
+    );
+  }
+  // Windows: reescreve o comando de exclusao simples (sem /s) para o ajudante
+  return cmdline
+    .split(/(\n|;|&&|\|\||\||&)/)
+    .map((parte) => {
+      if (/^(\n|;|&&|\|\||\||&)$/.test(parte)) return parte;
+      const m = parte.match(/^(\s*)(del|erase|rm|rmdir|rd)\s+(.*)$/i);
+      if (!m) return parte;
+      const modo = /^(rmdir|rd)$/i.test(m[2]) ? "rmdir" : /^(del|erase)$/i.test(m[2]) ? "del" : "rm";
+      return m[1] + "node " + q + " " + modo + " " + m[3];
+    })
+    .join("");
+}
+
 function executarComando(cmdline, cwd, timeoutMin) {
   const t0 = Date.now();
   const win = process.platform === "win32";
+  // v1.20.2: rm/rmdir do shell vai para a lixeira (com undo)
+  const cmdFinal = comandoComLixeira(cmdline, cwd);
   return new Promise((resolve) => {
     let timerGrupo = null; // limpo no fim natural; no timeout é que ele DEVE disparar
     let child = null; // declarado ANTES de 'fim' (o callback le 'child')
@@ -1814,6 +1961,12 @@ function executarComando(cmdline, cwd, timeoutMin) {
       encoding: "utf8",
       windowsHide: true,
       detached: !win, // líder de grupo no POSIX: dá pra matar os NETOS também
+      // v1.20.2: o ajudante da lixeira precisa saber a home, o log e o cwd
+      env: Object.assign({}, process.env, {
+        PONTE_HOME: cfg.home,
+        PONTE_LOG_FILE: LOG_FILE,
+        PONTE_CWD: cwd,
+      }),
     };
     // mata o GRUPO inteiro no timeout (v1.11.0 — o kill padrão do exec só
     // acerta o shell; "servidor &" e netos ficavam órfãos rodando)
@@ -1830,11 +1983,11 @@ function executarComando(cmdline, cwd, timeoutMin) {
       // Windows: exec usa o ComSpec (cmd.exe), exatamente como o Node faz
       // nativamente. stdin não pode ser "inherit" em exec — e o cmd não
       // precisa dele (prompt interativo de sudo é coisa de Linux).
-      child = exec(cmdline, opts, fim);
+      child = exec(cmdFinal, opts, fim);
     } else {
       // Linux/macOS/Termux: bash explícito (resolvido pelo BASH), stdin
       // herdado (sudo -S precisa).
-      child = execFile(BASH, ["-c", cmdline], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
+      child = execFile(BASH, ["-c", cmdFinal], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
     }
     // v1.20.0: registra o comando vivo para a acao command_stop
     comandoEmExecucao = {
@@ -2010,6 +2163,135 @@ function restoreFromTrash(trashName) {
     fs.unlinkSync(infoFile);
   } catch (_) {}
   return dest;
+}
+
+// ---------------------------------------------------------------- grupos
+// ---- v1.20.2: o rm do shell vai para a lixeira --------------------------
+// Antes, "rm ~/nota.txt" no run_command APAGAVA DE VEZ: sem lixeira, sem
+// undo, sem rastro. A promessa do projeto e "a IA nao apaga nada em
+// definitivo". Este ajudante (Node puro, sem dependencia) e o que o shell
+// chama: em vez de apagar, move para a lixeira XDG e registra no log de
+// auditoria — o undo_last passa a desfazer tambem o que o shell apagou.
+//
+// Fica na pasta de DADOS do agente (protegida contra leitura remota).
+const TRASH_RM_SCRIPT = [
+  '#!/usr/bin/env node',
+  '// Ajudante da lixeira (v1.20.2) — chamado pelo shell no lugar do rm.',
+  '"use strict";',
+  'const fs = require("fs");',
+  'const path = require("path");',
+  'const argv = process.argv.slice(2);',
+  'const modo = argv[0] === "rmdir" ? "rmdir" : argv[0] === "del" ? "del" : "rm";',
+  'const args = argv.slice(1);',
+  'const home = path.resolve(process.env.PONTE_HOME || process.env.HOME || process.cwd());',
+  'const trashBase = path.join(home, ".local", "share", "Trash");',
+  'const logFile = process.env.PONTE_LOG_FILE || "";',
+  'const cwd = process.env.PONTE_CWD || process.cwd();',
+  'let recursivo = false, forcar = false, verbose = false;',
+  'const alvos = [];',
+  'for (const a of args) {',
+  '  if (a === "--") continue;',
+  '  if (a.startsWith("--")) {',
+  '    if (/^--recursive|^--dir/.test(a)) recursivo = true;',
+  '    else if (/^--force/.test(a)) forcar = true;',
+  '    else if (/^--verbose/.test(a)) verbose = true;',
+  '    continue;',
+  '  }',
+  '  if (a.startsWith("-") && a !== "-") {',
+  '    if (/^-[^-]*r/i.test(a)) recursivo = true;',
+  '    else if (/^-[^-]*f/i.test(a)) forcar = true;',
+  '    else if (/^-[^-]*v/i.test(a)) verbose = true;',
+  '    continue;',
+  '  }',
+  '  alvos.push(a);',
+  '}',
+  'function uniq(dest) {',
+  '  if (!fs.existsSync(dest)) return dest;',
+  '  const dir = path.dirname(dest), ext = path.extname(dest), base = path.basename(dest, ext);',
+  '  for (let i = 2; i < 10000; i++) {',
+  '    const c = path.join(dir, base + "." + i + ext);',
+  '    if (!fs.existsSync(c)) return c;',
+  '  }',
+  '  throw new Error("sem nome livre na lixeira");',
+  '}',
+  'function lixeira(origem) {',
+  '  const files = path.join(trashBase, "files");',
+  '  const info = path.join(trashBase, "info");',
+  '  fs.mkdirSync(files, { recursive: true });',
+  '  fs.mkdirSync(info, { recursive: true });',
+  '  const target = uniq(path.join(files, path.basename(origem)));',
+  '  const infoFile = path.join(info, path.basename(target) + ".trashinfo");',
+  '  fs.writeFileSync(',
+  '    infoFile,',
+  '    "[Trash Info]\\nPath=" + encodeURI(origem) + "\\nDeletionDate=" +',
+  '      new Date().toISOString().replace(/\\..+/, "") + "\\n",',
+  '    "utf8"',
+  '  );',
+  '  try {',
+  '    fs.renameSync(origem, target);',
+  '  } catch (e) {',
+  '    if (e && e.code === "EXDEV") {',
+  '      fs.cpSync(origem, target, { recursive: true });',
+  '      fs.rmSync(origem, { recursive: true, force: true });',
+  '    } else {',
+  '      try { fs.unlinkSync(infoFile); } catch (_) {}',
+  '      throw e;',
+  '    }',
+  '  }',
+  '  return path.basename(target);',
+  '}',
+  'let erros = 0;',
+  'for (const alvo of alvos) {',
+  '  const p = path.resolve(cwd, alvo.replace(/^~(?=\\/|$)/, home));',
+  '  if (p === home) { console.error(modo + ": nao apago a home inteira"); erros++; continue; }',
+  '  if (!fs.existsSync(p)) {',
+  '    if (!forcar) { console.error(modo + ": " + alvo + ": nao existe"); erros++; }',
+  '    continue;',
+  '  }',
+  '  const st = fs.statSync(p);',
+  '  if (modo === "rmdir" && !st.isDirectory()) {',
+  '    console.error("rmdir: " + alvo + ": nao e um diretorio"); erros++; continue;',
+  '  }',
+  '  if (modo === "del" && st.isDirectory()) {',
+  '    console.error("del: " + alvo + ": e um diretorio"); erros++; continue;',
+  '  }',
+  '  if (modo === "rm" && st.isDirectory() && !recursivo) {',
+  '    console.error("rm: " + alvo + ": e um diretorio (use -r)"); erros++; continue;',
+  '  }',
+  '  try {',
+  '    const nome = lixeira(p);',
+  '    if (logFile) {',
+  '      try {',
+  '        fs.appendFileSync(',
+  '          logFile,',
+  '          JSON.stringify({ ts: new Date().toISOString(), action: "delete_shell", resumo: p + " -> lixeira", undo: { kind: "trash", trashName: nome } }) + "\\n",',
+  '          { mode: 0o600 }',
+  '        );',
+  '      } catch (_) {}',
+  '    }',
+  '    console.log((verbose ? "removido " : "movido para a lixeira: ") + p + " (" + nome + ")");',
+  '  } catch (e) {',
+  '    console.error(modo + ": " + alvo + ": " + (e && e.message ? e.message : e));',
+  '    erros++;',
+  '  }',
+  '}',
+  'process.exit(erros ? 1 : 0);',
+  "",
+].join("\n");
+
+// escreve (uma vez) o ajudante da lixeira na pasta de dados do agente
+let caminhoAjudaLixeiraCache = null;
+function caminhoAjudaLixeira() {
+  if (caminhoAjudaLixeiraCache) return caminhoAjudaLixeiraCache;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    const destino = path.join(DATA_DIR, "trash-rm.js");
+    fs.writeFileSync(destino, TRASH_RM_SCRIPT, { encoding: "utf8", mode: 0o700 });
+    caminhoAjudaLixeiraCache = destino;
+    return destino;
+  } catch (_) {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- grupos
@@ -2191,6 +2473,40 @@ function manifestoLocal() {
   return null;
 }
 
+// v1.20.2: verifica integridade do manifesto (hashes + assinatura opcional)
+function verificarManifesto(manifesto) {
+  // hashes
+  for (const item of manifesto.arquivos || []) {
+    if (item.sha256) {
+      const hash = crypto.createHash("sha256").update(item.conteudo || "").digest("hex");
+      if (hash !== item.sha256) {
+        return { erro: "hash invalido para " + item.origem + " (esperado " + item.sha256 + ", calculado " + hash + ")" };
+      }
+    }
+  }
+  // assinatura (opcional)
+  if (manifesto.assinatura && CHAVE_PUBLICA_MANIFESTO) {
+    const { algoritmo, chave_publica, assinatura_base64 } = manifesto.assinatura;
+    if (algoritmo !== "Ed25519") return { erro: "algoritmo de assinatura nao suportado: " + algoritmo };
+    if (chave_publica !== CHAVE_PUBLICA_MANIFESTO) return { erro: "chave publica do manifesto nao confere" };
+    const copia = Object.assign({}, manifesto);
+    delete copia.assinatura;
+    const dados = JSON.stringify(copia, null, 2);
+    const verificador = crypto.createVerify("sha256");
+    verificador.update(dados);
+    verificador.end();
+    const pub = crypto.createPublicKey({ key: Buffer.from(chave_publica, "base64"), format: "der", type: "spki" });
+    if (!verificador.verify(pub, Buffer.from(assinatura_base64, "base64"))) {
+      return { erro: "assinatura do manifesto invalida" };
+    }
+  }
+  return { erro: null };
+}
+
+// chave publica do manifesto (Ed25519, base64). Vem do scripts/gerar-manifesto.js
+// quando roda com --sign. Se null, o agente valida so os hashes.
+// (a constante ja foi declarada acima, linha 173)
+
 // versao do pacote da skill (vem do manifesto; fallback: marcador do SKILL.md)
 function versaoPacoteSkill() {
   const m = manifestoLocal();
@@ -2243,6 +2559,12 @@ async function atualizarSkill(origem) {
       r.erro = "manifesto da skill sem versao ou sem lista de arquivos";
       return r;
     }
+    // v1.20.2: verifica integridade (hashes SHA-256) E assinatura Ed25519 opcional
+    const { erro: errIntegridade } = verificarManifesto(manifesto);
+    if (errIntegridade) {
+      r.erro = "manifesto da skill falhou na validacao: " + errIntegridade;
+      return r;
+    }
     const remota = String(manifesto.versao).split(".").map(Number);
     const local = String(r.de || "").split(".").map(Number);
     r.para = String(manifesto.versao);
@@ -2262,6 +2584,7 @@ async function atualizarSkill(origem) {
       for (const item of manifesto.arquivos) {
         const origem = String(item && item.origem ? item.origem : "");
         const destino = String(item && item.destino ? item.destino : "");
+        const hashEsperado = String(item && item.sha256 ? item.sha256 : "");
         if (!origem || !destino) continue;
         // seguranca: o destino nao pode escapar da pasta de dados
         const destinoAbs = path.resolve(DATA_DIR, destino);
@@ -2272,6 +2595,13 @@ async function atualizarSkill(origem) {
         const resp = await httpsGetTexto(url, 0, null);
         if (resp.status !== 200) {
           throw new Error("HTTP " + resp.status + " ao baixar " + origem);
+        }
+        // valida o hash do arquivo baixado ANTES de gravar
+        if (hashEsperado) {
+          const hashBaixado = crypto.createHash("sha256").update(resp.texto).digest("hex");
+          if (hashBaixado !== hashEsperado) {
+            throw new Error("hash invalido para " + origem + " (esperado " + hashEsperado + ", baixado " + hashBaixado + ")");
+          }
         }
         const tmp = path.join(stage, destino);
         fs.mkdirSync(path.dirname(tmp), { recursive: true });
@@ -2416,13 +2746,26 @@ function versaoDoAgentJs(texto) {
 // de "node" no PATH e funciona em qualquer sistema operacional
 function validarAgentJs(caminho) {
   return new Promise((resolve) => {
-    try {
-      execFile(process.execPath, ["--check", caminho], { timeout: 20000, windowsHide: true }, (err) =>
-        resolve(!err)
-      );
-    } catch (_) {
-      resolve(false);
-    }
+    // valida com o PROPRIO node do processo (process.execPath) — nao depende
+    // de "node" no PATH e funciona em qualquer sistema operacional
+    // v1.20.2: em alguns ambientes (Android/Termux-like) o process.execPath
+    // aponta para o LINKER e nao para o node — ai o "node" do PATH e o
+    // caminho alternativo (sem ele, a validacao falharia e a atualizacao
+    // seria descartada).
+    const candidatos = [];
+    if (/node/i.test(path.basename(process.execPath || ""))) candidatos.push(process.execPath);
+    candidatos.push("node");
+    const tentar = (i) => {
+      if (i >= candidatos.length) return resolve(false);
+      try {
+        execFile(candidatos[i], ["--check", caminho], { timeout: 20000, windowsHide: true }, (err) =>
+          resolve(!err)
+        );
+      } catch (_) {
+        tentar(i + 1);
+      }
+    };
+    tentar(0);
   });
 }
 
@@ -2441,22 +2784,47 @@ async function prepararAgenteNovo() {
       return r;
     }
     r.versao = nova;
-    const atual = VERSION.split(".").map(Number);
-    if (!versaoMaisNova(nova.split(".").map(Number), atual)) return r; // ja na ultima
-    // grava num .tmp e valida ANTES de deixar pronto
-    // o nome PRECISA terminar em .js: o node --check aborta com
-    // ERR_UNKNOWN_FILE_EXTENSION em qualquer outra extensao (o mesmo bug que
-    // quebrava o atualizar.sh)
-    const tmp = path.join(DATA_DIR, "agent-download-" + process.pid + ".js");
-    fs.writeFileSync(tmp, resp.texto, "utf8");
-    const ok = await validarAgentJs(tmp);
-    if (!ok) {
+  const atual = VERSION.split(".").map(Number);
+  if (!versaoMaisNova(nova.split(".").map(Number), atual)) return r; // ja na ultima
+  // v1.20.2: o manifesto do agente (skill-manifest.json) tem o hash SHA-256
+  // do agent.js. Baixa o manifesto, valida hashes/assinatura, e confere se o
+  // agent.js baixado bate com o hash do manifesto.
+  let hashAgent = null;
+  try {
+    const respManifesto = await httpsGetTexto(SKILL_MANIFEST_URL, 0, null);
+    if (respManifesto.status === 200) {
+      const manifesto = JSON.parse(respManifesto.texto);
+      if (manifesto.arquivos) {
+        const itemAgent = manifesto.arquivos.find((i) => i.destino === "agent.js" || i.origem === "agente/agent.js");
+        if (itemAgent && itemAgent.sha256) hashAgent = itemAgent.sha256;
+      }
+    }
+  } catch (_) {}
+  // grava num .tmp e valida ANTES de deixar pronto
+  // o nome PRECISA terminar em .js: o node --check aborta com
+  // ERR_UNKNOWN_FILE_EXTENSION em qualquer outra extensao (o mesmo bug que
+  // quebrava o atualizar.sh)
+  const tmp = path.join(DATA_DIR, "agent-download-" + process.pid + ".js");
+  fs.writeFileSync(tmp, resp.texto, "utf8");
+  const ok = await validarAgentJs(tmp);
+  if (!ok) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {}
+    r.erro = "agent.js remoto invalido (node --check falhou) — nada foi preparado";
+    return r;
+  }
+  // hash do manifesto confere?
+  if (hashAgent) {
+    const hashBaixado = crypto.createHash("sha256").update(resp.texto).digest("hex");
+    if (hashBaixado !== hashAgent) {
       try {
         fs.unlinkSync(tmp);
       } catch (_) {}
-      r.erro = "agent.js remoto invalido (node --check falhou) — nada foi preparado";
+      r.erro = "hash do agent.js nao confere com o manifesto (esperado " + hashAgent + ", baixado " + hashBaixado + ")";
       return r;
     }
+  }
     try {
       fs.renameSync(tmp, AGENT_NOVO);
     } catch (_) {
@@ -5669,6 +6037,8 @@ module.exports = {
   dangerCheck,
   caminhoProtegido,
   comandoTocaDadosDoAgente,
+  comandoComLixeira,
+  TRASH_RM_SCRIPT,
   ALVO_SISTEMA,
   ALVO_SISTEMA_WIN,
   VERSION,

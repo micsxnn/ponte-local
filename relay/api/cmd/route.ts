@@ -1,12 +1,5 @@
 import { NextRequest } from "next/server";
-import {
-  addCommand,
-  ErroPersistencia,
-  isAdminAuthorized,
-  laneTemToken,
-  lanesComToken,
-  LANE_RE,
-} from "@/lib/ponte-store";
+import { isAdminAuthorized, laneTemToken, lanesComToken, LANE_RE } from "@/lib/ponte-store";
 
 const MAX_BODY = 12_000_000; // 12 MB (comandos podem carregar base64 p/ write_binary)
 
@@ -44,27 +37,9 @@ export async function POST(req: NextRequest) {
   } catch {
     return Response.json({ ok: false, error: "JSON inválido" }, { status: 400 });
   }
-  if (!body.action || typeof body.action !== "string") {
-    return Response.json({ ok: false, error: "Falta a ação" }, { status: 400 });
-  }
-  if (!/^[a-z_]{1,32}$/.test(body.action)) {
+  if (!body.lane || !LANE_RE.test(body.lane)) {
     return Response.json(
-      { ok: false, error: "Ação inválida (a-z e _, até 32 caracteres)" },
-      { status: 400 }
-    );
-  }
-  if (!body.lane || typeof body.lane !== "string") {
-    return Response.json(
-      {
-        ok: false,
-        error: `Lane obrigatória — informe a máquina no corpo: "lane":"<nome>". Lanes com token: ${lanesComToken().join(", ") || "(nenhuma — crie PONTE_TOKEN_<NOME> no .env)"}`,
-      },
-      { status: 400 }
-    );
-  }
-  if (!LANE_RE.test(body.lane)) {
-    return Response.json(
-      { ok: false, error: `Lane inválida "${body.lane}" — use a-z, 0-9, "-" e "_" (começando com letra ou número)` },
+      { ok: false, error: 'Lane ausente ou inválida — use a-z, 0-9, "-" e "_" (começando com letra ou número)' },
       { status: 400 }
     );
   }
@@ -92,11 +67,13 @@ export async function POST(req: NextRequest) {
     );
   }
   try {
+    const { addCommand, ErroPersistencia } = await import("@/lib/ponte-store");
     const cmd = addCommand(body.action, body.args ?? {}, body.lane);
     return Response.json({ ok: true, id: cmd.id, lane: cmd.lane });
   } catch (e) {
     // v1.5.1: falha de persistência recusa o comando com 503 (não aceita em
     // silêncio um id que o restart perderia); demais erros seguem 429.
+    const { ErroPersistencia } = await import("@/lib/ponte-store");
     return Response.json(
       { ok: false, error: e instanceof Error ? e.message : "Erro ao enfileirar" },
       { status: e instanceof ErroPersistencia ? 503 : 429 }

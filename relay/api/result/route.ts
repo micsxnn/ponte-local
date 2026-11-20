@@ -1,12 +1,5 @@
 import { NextRequest } from "next/server";
-import {
-  isAgentAuthorized,
-  laneForAgent,
-  markSeen,
-  ponte,
-  pushResult,
-  setAgentInfo,
-} from "@/lib/ponte-store";
+import { isAgentAuthorized, laneForAgent, markSeen, ponte, pushResult, setAgentInfo } from "@/lib/ponte-store";
 
 export const dynamic = "force-dynamic";
 
@@ -50,13 +43,11 @@ export async function POST(req: NextRequest) {
   } catch {
     return Response.json({ ok: false, error: "JSON inválido" }, { status: 400 });
   }
-  if (typeof body.id !== "number" || !Number.isInteger(body.id) || body.id <= 0) {
-    return Response.json({ ok: false, error: "Falta o id do comando" }, { status: 400 });
+  if (typeof body.id !== "number") {
+    return Response.json({ ok: false, error: "id obrigatório (number)" }, { status: 400 });
   }
-  // Resultado só vale para comando DESTA lane (v1.4.0): antes um resultado
-  // com id de comando de OUTRA máquina marcava o comando como respondido e
-  // ele nunca mais era entregue à lane dona.
   const s = ponte();
+  // v1.5.1: dono por id (lanePorId) — resultado para id de OUTRA lane é recusado
   const cmd = s.commands.find((c) => c.id === body.id);
   if (cmd && cmd.lane !== lane) {
     return Response.json({ ok: false, error: "Esse comando pertence a outra lane" }, { status: 403 });
@@ -86,6 +77,7 @@ export async function POST(req: NextRequest) {
     if (body.announce && typeof body.announce === "object") setAgentInfo(lane, body.announce);
     return Response.json({ ok: true, duplicado: true });
   }
+  const { pushResult } = await import("@/lib/ponte-store");
   pushResult({
     id: body.id,
     // v1.18.0: !!body.ok tratava a string "false" como true — o
@@ -98,8 +90,5 @@ export async function POST(req: NextRequest) {
     ts: Date.now(),
     lane,
   });
-  if (body.announce && typeof body.announce === "object") {
-    setAgentInfo(lane, body.announce);
-  }
   return Response.json({ ok: true });
 }

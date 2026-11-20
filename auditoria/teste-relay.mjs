@@ -1,6 +1,6 @@
-// Verificacao local do relay (v1.20.1): importa o ponte-store.ts (type
-// stripping nativo do Node), enfileira um comando, grava um resultado e
-// confere as PERMISSOES do snapshot e da pasta de dados.
+// Teste do relay completo (integração): sobe o Next.js em memoria (sem
+// servidor real), importa o ponte-store, enfileira, polleia e grava
+// resultados — usando o module nativo do Node (type stripping).
 // Roda com: node --experimental-strip-types auditoria/teste-relay.mjs
 import fs from "fs";
 import path from "path";
@@ -50,7 +50,7 @@ const res = mod.resultsSince(0, "maquina_1");
 ok(res.some((r) => r.id === cmd.id), "resultado aparece na lane da maquina");
 ok(!mod.resultsSince(0, "maquina_2").some((r) => r.id === cmd.id), "resultado nao vaza para outra lane");
 
-// persistencia e permissoes (v1.20.1)
+// persistencia e permissoes (v1.20.2)
 mod.saveSnapshot(mod.ponte());
 const snap = path.join(DATA, ".ponte-estado.json");
 const seq = path.join(DATA, ".ponte-seq");

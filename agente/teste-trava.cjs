@@ -3,6 +3,7 @@
 // Vetores vindos da auditoria paralela (subagente executou o dangerCheck real).
 const path = require("path");
 const os = require("os");
+const fs = require("fs");
 const mod = require("./agent.js");
 const { dangerCheck } = mod;
 const caminhoProtegido = mod.caminhoProtegido; // pode não existir na versão velha
@@ -72,6 +73,20 @@ const BLOQUEAR = [
   ["cd /etc && rm -f passwd", ctxLin, "v1.20.1: cd para fora do escopo"],
   ["cd /etc", ctxLin, "v1.20.1: cd para fora do escopo (sozinho)"],
   ["cd ..", { home: HOME_LIN, cwd: HOME_LIN }, "v1.20.1: cd com .."],
+  // ---- v1.20.2: exclusão pelo shell ----
+  // o rm simples dentro da home vai para a lixeira (v1.20.2). O que nao pode
+  // ir para a lixeira (sistema, alias/elevador, variavel) e recusado.
+  ["rm /etc/hosts", ctxLin, "v1.20.2: rm em area de sistema"],
+  ["rm ~/../etc/passwd", ctxLin, "v1.20.2: rm fora da home por .."],
+  ["rm /etc", ctxLin, "v1.20.2: rm em pasta de sistema"],
+  ["/bin/rm ~/nota.txt", ctxLin, "v1.20.2: rm por caminho absoluto nao vai pra lixeira"],
+  ["sudo rm ~/nota.txt", ctxLin, "v1.20.2: rm com elevador nao vai pra lixeira"],
+  ["command rm ~/nota.txt", ctxLin, "v1.20.2: rm com command nao vai pra lixeira"],
+  ["busybox rm ~/nota.txt", ctxLin, "v1.20.2: rm com alias nao vai pra lixeira"],
+  ["rm $ARQ", ctxLin, "v1.20.2: rm com variavel nao resolvida"],
+  ["del C:\\Windows\\System32\\drivers\\etc\\hosts", ctxWin, "v1.20.2: del em arquivo de sistema"],
+  ["del C:\\Users\\u\\Downloads /s", ctxWin, "v1.20.2: del /s nao passa pela lixeira"],
+  ["del C:\\Users\\outro\\nota.txt", ctxWin, "v1.20.2: del no perfil de outro usuario"],
 ];
 
 const PASSAR = [
@@ -89,6 +104,11 @@ const PASSAR = [
   ["dir C:\\Users\\u\\Downloads", ctxWin],
   ["del C:\\Users\\u\\Downloads\\lixo.txt", ctxWin, "del sem /s"],
   ["Remove-Item C:\\Users\\u\\Downloads\\lixo.txt", ctxWin, "Remove-Item sem -recurse"],
+  // v1.20.2: rm/rmdir dentro da home seguem permitidos — eles vao para a
+  // lixeira do agente (recuperavel com undo_last/restore)
+  ["rm ~/Downloads/velho.txt", ctxLin, "v1.20.2: rm dentro da home vai pra lixeira"],
+  ["rm -rf ~/projeto/node_modules", ctxLin, "v1.20.2: rm recursivo dentro da home"],
+  ["rmdir ~/pasta-vazia", ctxLin, "v1.20.2: rmdir dentro da home"],
 ];
 
 let falhas = 0;
@@ -175,9 +195,99 @@ if (typeof mod.comandoTocaDadosDoAgente !== "function") {
   }
 }
 
-if (mod.VERSION !== "1.20.1") {
+if (mod.VERSION !== "1.20.2") {
   falhas++;
-  console.log("FALHOU: VERSION deveria ser 1.20.1, é %s", mod.VERSION);
+  console.log("FALHOU: VERSION deveria ser 1.20.2, é %s", mod.VERSION);
+}
+
+// ---- v1.20.2: o rm do shell vai para a lixeira (e o undo desfaz) --------
+// Teste FUNCIONAL: roda o ajudante da lixeira de verdade, numa pasta
+// temporaria, e confere que o arquivo foi MOVIDO (nao apagado) e que o
+// log de auditoria tem a entrada de desfazer.
+if (typeof mod.TRASH_RM_SCRIPT !== "string") {
+  falhas++;
+  console.log("FALHOU: TRASH_RM_SCRIPT não está exportado");
+} else {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ponte-lixeira-"));
+  try {
+    const helper = path.join(tmp, "trash-rm.js");
+    fs.writeFileSync(helper, mod.TRASH_RM_SCRIPT, "utf8");
+    const alvo = path.join(tmp, "nota.txt");
+    fs.writeFileSync(alvo, "conteudo", "utf8");
+    const log = path.join(tmp, "ponte-log.jsonl");
+    const r = require("child_process").spawnSync(
+      "node",
+      [helper, "rm", alvo],
+      {
+        encoding: "utf8",
+        env: Object.assign({}, process.env, {
+          PONTE_HOME: tmp,
+          PONTE_LOG_FILE: log,
+          PONTE_CWD: tmp,
+        }),
+      }
+    );
+    if (r.status !== 0) {
+      falhas++;
+      console.log("FALHOU: o ajudante da lixeira saiu com %d (%s)", r.status, r.stderr);
+    }
+    if (fs.existsSync(alvo)) {
+      falhas++;
+      console.log("FALHOU: o arquivo continua no lugar — a lixeira nao foi usada");
+    }
+    const lixeira = path.join(tmp, ".local", "share", "Trash", "files");
+    const naLixeira = fs.existsSync(lixeira) ? fs.readdirSync(lixeira) : [];
+    if (!naLixeira.includes("nota.txt")) {
+      falhas++;
+      console.log("FALHOU: o arquivo nao foi para a lixeira (%s)", naLixeira.join(","));
+    }
+    let entrada = null;
+    try {
+      const linhas = fs.readFileSync(log, "utf8").trim().split("\n");
+      entrada = JSON.parse(linhas[linhas.length - 1]);
+    } catch (_) {}
+    if (!entrada || !entrada.undo || entrada.undo.kind !== "trash" || !entrada.undo.trashName) {
+      falhas++;
+      console.log("FALHOU: o log de auditoria nao tem a entrada de desfazer: %j", entrada);
+    }
+
+    // ---- integracao: o comando REAL do shell ("rm nota.txt") tem que ir
+    // para a lixeira — o agente injeta a funcao que substitui o rm
+    if (typeof mod.comandoComLixeira !== "function") {
+      falhas++;
+      console.log("FALHOU: comandoComLixeira não está exportado");
+    } else {
+      const alvo2 = path.join(tmp, "nota2.txt");
+      fs.writeFileSync(alvo2, "conteudo", "utf8");
+      const log2 = path.join(tmp, "ponte-log2.jsonl");
+      const cmd = mod.comandoComLixeira("rm nota2.txt", tmp);
+      const r2 = require("child_process").spawnSync("bash", ["-c", cmd], {
+        encoding: "utf8",
+        cwd: tmp,
+        env: Object.assign({}, process.env, {
+          PONTE_HOME: tmp,
+          PONTE_LOG_FILE: log2,
+          PONTE_CWD: tmp,
+        }),
+      });
+      if (r2.status !== 0) {
+        falhas++;
+        console.log("FALHOU: o shell com a lixeira saiu com %d (%s)", r2.status, r2.stderr);
+      }
+      if (fs.existsSync(alvo2)) {
+        falhas++;
+        console.log("FALHOU: o rm do shell apagou o arquivo de verdade (nao foi pra lixeira)");
+      }
+      const lixeira2 = path.join(tmp, ".local", "share", "Trash", "files");
+      const naLixeira2 = fs.existsSync(lixeira2) ? fs.readdirSync(lixeira2) : [];
+      if (!naLixeira2.includes("nota2.txt")) {
+        falhas++;
+        console.log("FALHOU: o rm do shell nao pôs o arquivo na lixeira (%s)", naLixeira2.join(","));
+      }
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 console.log(falhas === 0 ? "PASSOU — trava íntegra (%d vetores de bloqueio + %d de passagem)" : "RESULTADO: %d FALHA(S)", falhas === 0 ? BLOQUEAR.length : falhas, PASSAR.length);
