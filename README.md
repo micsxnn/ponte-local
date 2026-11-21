@@ -16,7 +16,7 @@ npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 
 [![Licença MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-3fb950)](LICENSE)
 [![npm](https://img.shields.io/npm/v/ponte-local?label=npm&color=cb3837)](https://www.npmjs.com/package/ponte-local)
-[![Agente](https://img.shields.io/badge/agente-v1.20.2-3fb950)](agente/agent.js)
+[![Agente](https://img.shields.io/badge/agente-v1.20.3-3fb950)](agente/agent.js)
 [![Relay](https://img.shields.io/badge/relay-v1.5.3-3fb950)](relay/ponte-store.ts)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-3fb950)](https://nodejs.org)
 [![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows%20%7C%20Termux-f59e0b)](#requisitos)
@@ -30,7 +30,7 @@ npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 
 > **Você é uma IA** (Claude, ChatGPT, Gemini, Cursor, agente de código)? Leia
 > [`SKILL.md`](SKILL.md) primeiro. A skill traz o passo a passo de instalação,
-> o que pedir ao usuário, a tabela das 33 ações e as regras de segurança.
+> o que pedir ao usuário, a tabela das 34 ações e as regras de segurança.
 > Comece pela Regra de Ouro #0: pergunte se o PC é Windows ou Linux.
 
 ## Sumário
@@ -42,7 +42,7 @@ npx ponte-local start --server https://SEU-RELAY --token SEU_TOKEN --save
 5. [Os 4 modos do `run_command`](#os-4-modos-do-run_command)
 6. [Requisitos](#requisitos)
 7. [Primeiros passos](#primeiros-passos)
-8. [As 33 ações do agente](#as-33-ações-do-agente)
+8. [As 34 ações do agente](#as-34-ações-do-agente)
 9. [Estrutura do repositório](#estrutura-do-repositório)
 10. [Destaques por versão](#destaques-por-versão)
 11. [Perguntas frequentes](#perguntas-frequentes)
@@ -65,7 +65,7 @@ SSH, nada para configurar no roteador.
 
 | Componente | Onde roda | Tecnologia | Papel |
 |------------|-----------|------------|-------|
-| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 33 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
+| **Agente** — `agent.js` | no seu PC | Node.js 18+, 1 arquivo, 0 dependências | executa as 34 ações localmente, com escopo, lixeira e trava anticatástrofe no próprio processo |
 | **Relay** — `ponte-store.ts` + rotas | na sua VM/servidor | Next.js (API routes) | fila por máquina (lane), sequência persistida em disco, painel de status |
 | **Operador** — `ponte.py` | na sua VM/servidor | Python 3, só biblioteca padrão | CLI para injetar comandos e ler resultados pelo terminal |
 
@@ -320,7 +320,7 @@ comando que executa alguma coisa no seu computador.**
 npx ponte-local skill                    # a especificação completa da skill
 npx ponte-local skill operacao           # uma seção só
 npx ponte-local skill --lista            # índice das seções
-npx ponte-local acoes                    # manual das ações (31)
+npx ponte-local acoes                    # manual das ações (34)
 npx ponte-local acoes mouse_click        # detalhe de UMA ação
 npx ponte-local acoes --json             # todas em JSON, fácil de parsear
 ```
@@ -338,7 +338,7 @@ config. Ela só lê a spec e monta os comandos que manda pro relay.
 |---|---|---|
 | `npx ponte-local start` | PC do usuário | um banner e um agente rodando (nada é "devolvido" para a IA por esse comando) |
 | `npx ponte-local skill` | VM da IA | a spec completa, em texto |
-| `npx ponte-local acoes` | VM da IA | as 31 ações, com args e descrição |
+| `npx ponte-local acoes` | VM da IA | as 34 ações, com args e descrição |
 | `POST /api/ponte/cmd` | via relay | o que a IA **manda** pro PC |
 | `GET /api/ponte/results` | via relay | o que a IA **recebe** do PC |
 
@@ -377,7 +377,7 @@ E o lado **agente** (na VM da IA — só leitura):
 
 ```bash
 npx ponte-local skill                       # a especificação da skill
-npx ponte-local acoes                       # o manual das 31 ações
+npx ponte-local acoes                       # o manual das 34 ações
 ```
 
 **Onde os dados ficam** (fora do pacote — o cache do `npx` é efêmero e o
@@ -456,7 +456,7 @@ node agent.js --server https://SEU-RELAY --token SEU_TOKEN --save
 >   console não congela mais o agente) e o `watchdog.bat` religa o agente
 >   sozinho se ele morrer.
 
-## As 33 ações do agente
+## As 34 ações do agente
 
 | Grupo | Ações |
 |-------|-------|
@@ -544,7 +544,8 @@ ponte-local/
 
 | Componente | Versão | O que trouxe |
 |------------|--------|--------------|
-| Agente | **v1.20.2** (atual) | **Segurança reforçada (v1.20.2)**: o `rm`/`rmdir`/`del` do shell agora passa pela lixeira do agente (reversível com `undo_last`/`restore`); exclusão em área de sistema, home inteira, alias/elevador (`/bin/rm`, `sudo rm`) e variável não resolvida são recusados. Integridade no auto-update: manifesto com hashes SHA-256 (validação ao baixar), hash do `agent.js` conferido, assinatura Ed25519 opcional. Relay: snapshot/contador em 0600, pasta de dados em 0700, aviso quando relay em `http://`. |
+| Agente | **v1.20.3** (atual) | **Profissionalização (v1.20.3)**: `run_command` rejeita `cwd` absoluto (bug: `path.resolve(home, "/etc")` ignorava a home); `stdin` nunca herda do processo do agente (evita travamento em comandos interativos); `pushResult` do relay lança erro 403 em vez de drop silencioso para resultado de lane errada; validação de cwd testada com suíte dedicada; contagem corrigida para 34 ações; todas as versões sincronizadas (agente, package.json, docs). |
+| Agente | v1.20.2 | **Segurança reforçada (v1.20.2)**: o `rm`/`rmdir`/`del` do shell agora passa pela lixeira do agente (reversível com `undo_last`/`restore`); exclusão em área de sistema, home inteira, alias/elevador (`/bin/rm`, `sudo rm`) e variável não resolvida são recusados. Integridade no auto-update: manifesto com hashes SHA-256 (validação ao baixar), hash do `agent.js` conferido, assinatura Ed25519 opcional. Relay: snapshot/contador em 0600, pasta de dados em 0700, aviso quando relay em `http://`. |
 | Agente | v1.20.1 | **Auditoria de segurança (segunda rodada)**: a trava estava lendo o *primeiro token* do comando como "comando real" — e isso deixava passar, no modo autônomo, `busybox rm -rf /`, `r=rm; $r -rf /`, `for f in /etc/*; do rm -rf $f; done` e `awk 'BEGIN{system("rm -rf /")}'`. Agora o comando real é resolvido (alias, variável, loop, `awk system()`), a escrita em arquivo de sistema (redirect, `tee`, `truncate`, `install`, `dd of=`) é recusada, `cd` para fora da home é bloqueado, e a leitura da config/log do agente não passa mais por glob/pasta/`find -exec`. No relay: snapshot e contador em 0600 e pasta de dados em 0700, aviso quando o relay está em `http://` (token em claro) |
 | Agente | v1.20.0 | **`command_stop`**: mata o comando em execução (grupo de processos no POSIX, árvore no Windows) — build travado, servidor que não volta. Corrige também o `ReferenceError` em `run_command` quando o comando falhava (stdout/stderr/exitCode agora chegam à IA) e o TDZ do `child` no callback `fim` |
 | Agente | v1.19.0 | Auto-update do **agente** (o `agent.js` agora se atualiza sozinho, como a skill): checa a cada 30 min, baixa, valida com `node --check` e prepara a versão nova — que entra no próximo boot, com backup. Node puro, funciona igual no Linux (qualquer distro), Windows, macOS e Termux. Novo `agente/atualizar.bat` (o Windows não tinha caminho manual) |

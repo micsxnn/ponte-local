@@ -467,23 +467,23 @@ export function pushResult(r: PonteResult): void {
   // é recusado mesmo com o comando fora do histórico (janela respondidos).
   const cmd = s.commands.find((c) => c.id === r.id);
   if (cmd && cmd.lane !== r.lane) {
-    return; // drop silencioso: resultado de lane errada
+    throw new Error("Esse comando pertence a outra lane — resultado recusado");
   }
   // v1.5.1: dono por id (lanePorId) — cobre o comando que JÁ SAIU do histórico:
   // antes, id na janela global `respondidos` (fora da janela de results)
   // aceitava resultado de token de qualquer lane.
   const dona = s.lanePorId.get(r.id);
   if (dona && dona !== r.lane) {
-    return;
+    throw new Error("Esse comando pertence a outra lane — resultado recusado");
   }
   const jáTem = s.results.find((rr) => rr.id === r.id);
   if (jáTem && jáTem.lane !== r.lane) {
-    return;
+    throw new Error("Esse resultado pertence a outra lane — resultado recusado");
   }
   // v1.5.1: dona === lane também libera (resultado atrasado de comando podado
   // da PRÓPRIA lane vale); id sem rastro de dono mantém o comportamento antigo.
   if (!cmd && !jáTem && dona !== r.lane && !s.respondidos.includes(r.id)) {
-    return;
+    throw new Error("Comando desconhecido nesta lane — resultado recusado");
   }
   if (jáTem) {
     // Retry do agente chegando com resultado já registrado (v1.5.0):

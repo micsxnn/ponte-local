@@ -124,7 +124,7 @@ const http = require("http");
 const https = require("https");
 const { execFile, exec, spawn } = require("child_process");
 
-const VERSION = "1.20.2";
+const VERSION = "1.20.3";
 const REQUEST_TIMEOUT_MS = 15000;
 
 // SCRIPT_DIR = pasta do PACOTE (só para achar recursos que vêm com ele).
@@ -1981,13 +1981,15 @@ function executarComando(cmdline, cwd, timeoutMin) {
     };
     if (win) {
       // Windows: exec usa o ComSpec (cmd.exe), exatamente como o Node faz
-      // nativamente. stdin não pode ser "inherit" em exec — e o cmd não
-      // precisa dele (prompt interativo de sudo é coisa de Linux).
-      child = exec(cmdFinal, opts, fim);
+      // nativamente. stdin nunca herda do processo do agente — comandos
+      // interativos (sudo -S, prompts) não funcionam pelo run_command; essa é
+      // uma proteção de segurança, não um bug.
+      child = exec(cmdFinal, { ...opts, stdio: ["ignore", "pipe", "pipe"] }, fim);
     } else {
-      // Linux/macOS/Termux: bash explícito (resolvido pelo BASH), stdin
-      // herdado (sudo -S precisa).
-      child = execFile(BASH, ["-c", cmdFinal], { ...opts, stdio: ["inherit", "pipe", "pipe"] }, fim);
+      // Linux/macOS/Termux: bash explícito (resolvido pelo BASH). stdin NUNCA
+      // herda do processo do agente — evita que o agente fique travado
+      // esperando input de um comando que nunca chega (v1.20.3).
+      child = execFile(BASH, ["-c", cmdFinal], { ...opts, stdio: ["ignore", "pipe", "pipe"] }, fim);
     }
     // v1.20.0: registra o comando vivo para a acao command_stop
     comandoEmExecucao = {
@@ -5222,10 +5224,22 @@ const ACTIONS = {
     if (cmdline.length > 4000) throw new Error("Comando grande demais (limite 4000 caracteres)");
     // v1.18.0: o cwd tem que estar dentro do escopo. Antes, "cwd":"../../.."
     // resolvia para "/" e o comando rodava fora da sua home.
-    const cwd = args.cwd ? path.resolve(cfg.home, String(args.cwd)) : cfg.home;
+    // v1.20.3: caminhos ABSOLUTOS são rejeitados — path.resolve(home, "/etc")
+    // retorna "/etc", ignorando a home. Só aceitamos caminhos relativos
+    // resolvidos dentro da home (ou sem cwd, que cai direto na home).
+    let cwd;
+    if (!args.cwd) {
+      cwd = homeRes;
+    } else if (path.isAbsolute(String(args.cwd))) {
+      throw new Error(
+        "cwd absoluto não permitido — use um caminho relativo à sua home (ex.: \"Downloads\")"
+      );
+    } else {
+      cwd = path.resolve(cfg.home, String(args.cwd));
+      if (cwd !== homeRes && !cwd.startsWith(homeRes + path.sep))
+        throw new Error("cwd fora do escopo: só posso rodar dentro de " + homeRes);
+    }
     const homeRes = path.resolve(cfg.home);
-    if (cwd !== homeRes && !cwd.startsWith(homeRes + path.sep))
-      throw new Error("cwd fora do escopo: só posso rodar dentro de " + homeRes);
     const timeoutMin = Math.min(30, Number(args.timeoutMin) || 3);
 
     // ---- v1.18.0: o run_command nao pode LER os segredos do agente ----

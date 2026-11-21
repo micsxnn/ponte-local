@@ -533,7 +533,7 @@ execução (seria perigoso) — ele avisa no terminal:
 
 ```
   ┌──────────────────────────────────────────────┐
-  │  Nova versao do agente: v1.20.2              │
+  │  Nova versao do agente: v1.20.3              │
   └──────────────────────────────────────────────┘
     Baixada e validada. Reinicie o agente para usar.
 ```

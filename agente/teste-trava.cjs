@@ -195,9 +195,9 @@ if (typeof mod.comandoTocaDadosDoAgente !== "function") {
   }
 }
 
-if (mod.VERSION !== "1.20.2") {
+if (mod.VERSION !== "1.20.3") {
   falhas++;
-  console.log("FALHOU: VERSION deveria ser 1.20.2, é %s", mod.VERSION);
+  console.log("FALHOU: VERSION deveria ser 1.20.3, é %s", mod.VERSION);
 }
 
 // ---- v1.20.2: o rm do shell vai para a lixeira (e o undo desfaz) --------
